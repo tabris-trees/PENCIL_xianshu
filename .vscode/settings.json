@@ -1,0 +1,12 @@
+{
+    "cmake.sourceDirectory": "D:/OneDrive - tabristrees/Programming Working/Fortran/pencil-code/src/cuda/src_new",
+    "files.associations": {
+        "*.in": "fortran"
+    },
+    "fortran.fortls.arguments": [
+        "--hover_signature",
+        "--use_signature_help",
+        "--incremental_sync",
+        "--autocomplete_use_snippets"
+    ],
+}
