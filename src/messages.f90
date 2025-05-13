@@ -6,6 +6,7 @@ module Messages
 !
   use Cdata
   use Mpicomm
+!$ use General, only: omp_single
 !$ use OMP_lib
 !
   implicit none
@@ -93,19 +94,21 @@ module Messages
     subroutine not_implemented(location,message,force)
 !
       use General, only: loptest
+      use Mpicomm, only: die_immediately, die_gracefully
 
       character(len=*), optional :: location, message
       logical, optional :: force
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 !
       if (.not.llife_support) then
         errors=errors+1
 !
         if (lroot .or. (ncpus<=16 .and. (message/=''))) then
-          call terminal_highlight_error()
+          call terminal_highlight_error
           write (*,'(A18)',ADVANCE='NO') "NOT IMPLEMENTED: "
-          call terminal_defaultcolor()
+          call terminal_defaultcolor
           if (present(message)) then
             write(*,*) trim(scaller)//": "//trim(message)//'!'
           else
@@ -119,12 +122,14 @@ module Messages
         endif
 !
       endif
+      !$ endif
 !
     endsubroutine not_implemented
 !***********************************************************************
    subroutine fatal_error(location,message,force)
 !
       use General, only: loptest
+      use Mpicomm, only: die_immediately, die_gracefully
 
       character(len=*), optional :: location
       character(len=*)           :: message
@@ -132,6 +137,7 @@ module Messages
 !
       logical :: fatal
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 !
       if (.not.llife_support) then
@@ -140,13 +146,13 @@ module Messages
         fatal=loptest(force)
 !
         if (lroot .or. (ncpus<=16 .and. (message/='')) .or. fatal) then
-          call terminal_highlight_fatal_error()
+          call terminal_highlight_fatal_error
           if (scaller=='') then
             write (*,*) "FATAL ERROR: "//trim(message)//'!!!'
           else
             write (*,*) "FATAL ERROR: "//trim(scaller)//": "//trim(message)//'!!!'
           endif
-          call terminal_defaultcolor()
+          call terminal_defaultcolor
         endif
 !
         if (ldie_onfatalerror) then
@@ -155,6 +161,7 @@ module Messages
         endif
 !
       endif
+      !$ endif
 !
     endsubroutine fatal_error
 !***********************************************************************
@@ -166,6 +173,7 @@ module Messages
 !  07-26-2011: Julien\ Added forced exit if "force" is set to .true.
 !
       use General, only: loptest
+      use Mpicomm, only: die_immediately, die_gracefully
 
       character(len=*), optional :: location
       character(len=*)           :: message
@@ -173,20 +181,22 @@ module Messages
 !
       logical :: fatal
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 !
       fatal=loptest(force)
       errors=errors+1
 !
       if (lroot .or. (ncpus<=16 .and. (message/='')) .or. fatal) then
-        call terminal_highlight_fatal_error()
+        call terminal_highlight_fatal_error
         write (*,'(A13)',ADVANCE='NO') "FATAL ERROR: "
-        call terminal_defaultcolor()
+        call terminal_defaultcolor
         write (*,*) trim(scaller) // ": " // trim(message)//'!!!'
       endif
 !
       if (fatal) call die_immediately()
       call die_gracefully()
+      !$ endif
 !
     endsubroutine inevitably_fatal_error
 !***********************************************************************
@@ -196,20 +206,24 @@ module Messages
 !  at the end of the time-step.
 !
 !  17-may-2006/anders: coded
+!  4-apr-2025/TP: if using the GPU abort on local errors immediately since combining local errors is surprisingly expensive
+!                 and anyways if using the GPU I think as of date this is not even called
 !
+      use MPIComm, only: mpiabort
       character(len=*), optional :: location
       character(len=*)           :: message
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 !
       if (.not.llife_support) then
 
         fatal_errors=fatal_errors+1
 !
-        if (lroot .or. (ncpus<=16 .and. (message/=''))) then
-          call terminal_highlight_fatal_error()
+        if (lgpu .or. lroot .or. (ncpus<=16 .and. (message/=''))) then
+          call terminal_highlight_fatal_error
           write (*,'(A13)',ADVANCE='NO') "FATAL ERROR: "
-          call terminal_defaultcolor()
+          call terminal_defaultcolor
           write (*,*) trim(scaller)//": "//trim(message)//'!!!'
         endif
 !
@@ -222,6 +236,9 @@ module Messages
           message_stored=trim(message_stored)//'; '//trim(scaller)//": "//trim(message)
         endif
       endif
+      !$ endif
+      if(lgpu) call mpiabort
+
 !
     endsubroutine fatal_error_local
 !***********************************************************************
@@ -230,17 +247,21 @@ module Messages
 !  Collect fatal errors from processors and die if there are any.
 !
 !  17-may-2006/anders: coded
+!  4-apr-2025/TP: not done on the GPU since surprisingly expensive: instead MPI_ABORT on any local error immediately
 !
       use General, only: itoa
+      use Mpicomm, only: mpireduce_sum_int, mpibcast_int, mpigather_scl_str, MPI_COMM_WORLD
+      use Mpicomm, only: die_immediately, die_gracefully
+
 
       character(LEN=linelen), dimension(ncpus) :: messages
       character(LEN=linelen) :: preceding
       integer :: i, istart, iend
 
+      if (lgpu) return
       if (.not.llife_support) then
 
-        call mpireduce_sum_int(fatal_errors,fatal_errors_total,MPI_COMM_WORLD)
-        call mpibcast_int(fatal_errors_total,comm=MPI_COMM_WORLD)
+        call mpiallreduce_sum_int(fatal_errors,fatal_errors_total,MPI_COMM_WORLD)
 !
         if (fatal_errors_total/=0) then
           call mpigather_scl_str(message_stored,messages)
@@ -291,24 +312,28 @@ module Messages
 !***********************************************************************
     subroutine error(location,message)
 !
+      use Mpicomm, only: die_gracefully
+
       character(len=*), optional :: location
       character(len=*)           :: message
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 
       if (.not.llife_support) then
         errors=errors+1
 !
         if (lroot .or. (ncpus<=16 .and. (message/=''))) then
-          call terminal_highlight_error()
+          call terminal_highlight_error
           write (*,'(A7)',ADVANCE='NO') "ERROR: "
-          call terminal_defaultcolor()
+          call terminal_defaultcolor
           write (*,*) trim(scaller) // ": " // trim(message)//'!!!'
         endif
 !
         if (ldie_onerror) call die_gracefully
 !
       endif
+      !$ endif
 !
     endsubroutine error
 !***********************************************************************
@@ -320,18 +345,20 @@ module Messages
 !   2-apr-17/MR: optional parameter ip = processor number added
 !
       use General, only: ioptest
+      use Mpicomm, only: die_gracefully
 
       character (len=*), optional :: location
       character (len=*)           :: message
       integer, optional :: ipr
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 
       if (.not.llife_support) then
         if ((iproc_world == ioptest(ipr,0)) .and. (message /= '')) then
-          call terminal_highlight_warning()
+          call terminal_highlight_warning
           write (*,'(A9)',ADVANCE='NO') "WARNING: "
-          call terminal_defaultcolor()
+          call terminal_defaultcolor
           write (*,*) trim(scaller) // ": " // trim(message)//'!'
 !          call flush(6) ! has to wait until F2003
         endif
@@ -339,6 +366,7 @@ module Messages
         if (ldie_onwarning) call die_gracefully
 !
       endif
+      !$ endif
 !
     endsubroutine warning
 !***********************************************************************
@@ -356,6 +384,7 @@ module Messages
 
       integer :: level_ = iinformation_ip
 !
+      !$ if (omp_single()) then
       if (present(location)) scaller=location
 
       if (present(level)) level_=level
@@ -363,6 +392,7 @@ module Messages
       if ((iproc_world == ioptest(ipr,0)) .and. (message /= '')) then
         if (ip<=level_) write (*,*) trim(scaller) // ": " // trim(message)//'.'
       endif
+      !$ endif
 !
     endsubroutine information
 !***********************************************************************
@@ -486,18 +516,21 @@ module Messages
 !
     endsubroutine svn_id
 !***********************************************************************
-    subroutine timing(location,message,instruct,mnloop)
+    subroutine timing(location,message,instruct,mnloop,lforce)
 !
 !  Timer: write the current systems time to standart output
 !  provided it=it_timing.
 !
+      use General, only: loptest
+      use Mpicomm, only: mpiwtime
+
       integer :: lun=9
       character(len=*), optional :: location
       character(len=*) :: message
       real(KIND=rkind8) :: time
       real(KIND=rkind8), save :: time_initial
       character(len=*), optional :: instruct
-      logical, optional :: mnloop
+      logical, optional :: mnloop, lforce
       integer :: mul_fac
       logical, save :: opened = .false.
 !
@@ -507,7 +540,7 @@ module Messages
 !
 !  work on the timing only when it == it_timing
 !
-      if (it /= it_timing) return
+      if (.not.loptest(lforce) .and. it /= it_timing) return
 !
       if (lroot) then
 !
@@ -543,6 +576,13 @@ module Messages
 !
         if (present(instruct)) then
           if (opened .and. (trim(instruct) == 'finalize')) then
+            if (.not.lfirst) then
+              if (message=='') then
+                write(lun,*) time
+              else
+                write(lun,*) time, trim(scaller)//": "//trim(message)//'.'
+              endif
+            endif
             close(lun)
             opened = .false.
           endif
@@ -1023,7 +1063,7 @@ module Messages
     call mpireduce_sum_int(memuse,memory)
 
     if (lroot) then
-      print'(1x,a,f9.3)', 'Maximum used memory per cpu [MBytes] = ', memcpu/1024.
+      print'(1x,a,f9.3)', 'Maximum used memory per MPI process [MBytes] = ', memcpu/1024.
       if (memory>1e6) then
         print'(1x,a,f12.3)', 'Maximum used memory [GBytes] = ', memory/1024.**2
       else

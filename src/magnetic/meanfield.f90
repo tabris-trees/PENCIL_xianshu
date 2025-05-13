@@ -31,7 +31,7 @@ module Magnetic_meanfield
 !  array for inputting alpha profile
 !
   real, dimension (mx,my) :: alpha_input
-  real, pointer :: B_ext2
+  real, pointer :: B_ext2, eta
   logical, pointer :: lweyl_gauge
 !
   real, dimension (nx,3,3) :: hij
@@ -60,7 +60,7 @@ module Magnetic_meanfield
 ! Input parameters
 !
   real :: Omega_ampl=0.0, dummy=0.0
-  real :: alpha_effect=0.0, alpha_quenching=0.0, delta_effect=0.0, alpha_zz=0.
+  real :: Calp=0.0, alpha_effect=0.0, alpha_quenching=0.0, delta_effect=0.0, alpha_zz=0.
   real :: gamma_effect=0.0, gamma_quenching=0.0
   real :: chit_quenching=0.0, chi_t0=0.0
   real :: meanfield_etat=0.0, meanfield_etat_height=1., meanfield_pumping=1.
@@ -124,7 +124,7 @@ module Magnetic_meanfield
   logical :: lshear_current_effect=.false., lalphass_disk=.false.
 !
   namelist /magn_mf_run_pars/ &
-      alpha_effect, alpha_quenching, alpha_rmax, alpha_exp, alpha_zz, &
+      Calp, alpha_effect, alpha_quenching, alpha_rmax, alpha_exp, alpha_zz, &
       gamma_effect, gamma_quenching, &
       alpha_eps, alpha_pom0, alpha_width, alpha_width2, alpha_aniso, &
       alpha_tensor, eta_tensor, &
@@ -170,13 +170,15 @@ module Magnetic_meanfield
                                 ! DIAG_DOC: in the paper referred to as
                                 ! DIAG_DOC: $\left<q_g(\overline{B})\right>$
   integer :: idiag_qam=0        ! DIAG_DOC: $\left<q_a(\overline{B})\right>$
-  integer :: idiag_alpm=0       ! DIAG_DOC: $\left<\alpha\right>$
+  integer :: idiag_alpm=0       ! DIAG_DOC: $\left<\alpha\right>$  !(where is this implemented?)
   integer :: idiag_etatm=0      ! DIAG_DOC: $\left<\eta_{\rm t}\right>$
   integer :: idiag_EMFmz1=0     ! DIAG_DOC: $\left<{\cal E}\right>_{xy}|_x$
   integer :: idiag_EMFmz2=0     ! DIAG_DOC: $\left<{\cal E}\right>_{xy}|_y$
   integer :: idiag_EMFmz3=0     ! DIAG_DOC: $\left<{\cal E}\right>_{xy}|_z$
   integer :: idiag_EMFdotBm=0   ! DIAG_DOC: $\left<{\cal E}\cdot\Bv \right>$
   integer :: idiag_EMFdotB_int=0! DIAG_DOC: $\int{\cal E}\cdot\Bv dV$
+  integer :: idiag_alpKjbm=0    ! DIAG_DOC: $\left<\alpha_\mathrm{K}\overline{\Bv}\cdot\overline{\Jv}\right>$
+  integer :: idiag_alpKm=0      ! DIAG_DOC: $\left<\alpha_\mathrm{K}\right>$
   integer :: idiag_peffmxz=0    ! YAVG_DOC: $\left<{\cal P}_{\rm eff}\right>_{y}$
   integer :: idiag_alpmxz=0     ! YAVG_DOC: $\left<\alpha\right>_{y}$
 !
@@ -261,8 +263,21 @@ module Magnetic_meanfield
 !
       real, dimension (mx,my,mz,mfarray) :: f
       real, dimension (nx) :: kf_x_tmp, kf_x1_tmp, prof_tmp
-!      character (len=linelen) :: dummy
+      real :: kz1
       integer :: ierr, i, j
+!
+!  Get B_ext2 and eta from magnetic module.
+!
+      call get_shared_variable('B_ext2',B_ext2)
+      call get_shared_variable('eta',eta)
+!
+!  Possibility of giving Calp=alpha_effect/[(eta+etat)*k1]
+!
+       if (alpha_effect==0. .and. Calp/=0.) then
+         kz1=2.*pi/Lxyz(3)
+         alpha_effect=Calp*(eta+meanfield_etat)*kz1
+         if (lroot) print*,'alpha_effect=',alpha_effect
+       endif
 !
 !  check for alpha profile
 !
@@ -615,10 +630,6 @@ module Magnetic_meanfield
         hijk(:,3,2,1)=+hijk(:,2,3,1)
       endif
 !
-!  Get B_ext2 from magnetic module.
-!
-      call get_shared_variable('B_ext2',B_ext2)
-!
 !  thin disk model switch
 !
       if (alpha_profile=='alphass' .or. alpha_profile=='fluc-alpha-disk' &
@@ -745,6 +756,11 @@ module Magnetic_meanfield
         lpenc_requested(i_bij)=.true.
         lpenc_requested(i_mf_EMF)=.true.
       endif
+!
+!  If idiag_alpKjbm/=0, we need j.b.
+!
+      if (idiag_alpKjbm/=0) lpenc_requested(i_jb)=.true.
+!
 !  thin-disk dynamo models
 !
       if (lalphass_disk) lpenc_requested(i_cs2)=.true.
@@ -1329,11 +1345,18 @@ module Magnetic_meanfield
 !  alpha effect only to the toroidal component. Since p%mf_EMF
 !  was initialized only in the previous line, we can just set
 !  the r and theta components to zero (in spherical coordinates).
+!  In Cartesian coordinates, we want the x and z components to vanish,
+!  so we keep only the y-components.
 !
         if (lalpha_Omega_approx) then
-          p%mf_EMF(:,1:2)=0.
-          call fatal_error("calc_pencils_magn_mf: ", &
-              "lalpha_Omega_approx not implemented for this case")
+          if (lspherical_coords) then
+            p%mf_EMF(:,1:2)=0.
+            call fatal_error("calc_pencils_magn_mf: ", &
+                "lalpha_Omega_approx not implemented for this case")
+          else
+            p%mf_EMF(:,1)=0.
+            p%mf_EMF(:,3)=0.
+          endif
         endif
 !
 !  Apply eta tensor, but subtract part from etat for stability reasons.
@@ -1464,11 +1487,6 @@ module Magnetic_meanfield
           p%mf_EMF(:,j)=p%mf_EMF(:,j)+GWfac1*levi_civita(k,nn,j)*hij(:,i,nn)*p%bij(:,k,i) &
                                      -GWfac2*levi_civita(k,nn,i)*hij(:,j,nn)*p%bij(:,k,i) &
                                      -GWfac3*levi_civita(k,nn,i)*hijk(:,j,nn,i)*p%bb(:,k)
-if (ip<10 .and. levi_civita(k,nn,j) /= 0.) then
-  print*,'AXEL1, j,k,i,nn,eps, hij(1,i,nn),p%bij(1,2,1),p%mf_EMF(:,j)=',j,k,i,nn, &
-    levi_civita(k,nn,j),hij(1,i,nn),p%bij(1,k,i),p%mf_EMF(1,j), &
-    levi_civita(k,nn,j)*hij(1,i,nn)*p%bij(1,k,i)
-endif
         enddo
         enddo
         enddo
@@ -1582,6 +1600,8 @@ endif
         if (idiag_qsm/=0) call sum_mn_name(meanfield_qs_func,idiag_qsm)
         if (idiag_qpm/=0) call sum_mn_name(meanfield_qp_func,idiag_qpm)
         if (idiag_qem/=0) call sum_mn_name(meanfield_qe_func,idiag_qem)
+        if (idiag_alpKm/=0) call sum_mn_name(alpha_total,idiag_alpKm)
+        if (idiag_alpKjbm/=0) call sum_mn_name(alpha_total*p%jb,idiag_alpKjbm)
       endif
 !
 !  1d-averages. Happens at every it1d timesteps, NOT at every it1.
@@ -1657,9 +1677,7 @@ endif
 !
 !  Apply p%mf_EMF only if .not.lmagn_mf_demfdt; otherwise postpone.
 !
-if (ip<10) print*,'AXEL2, p%mf_EMF(:,2)=',p%mf_EMF(:,2)
         if (.not.lmagn_mf_demfdt) then
-if (ip<10) print*,'AXEL3, p%mf_EMF(:,2)=',p%mf_EMF(:,2)
           df(l1:l2,m,n,iax:iaz)=df(l1:l2,m,n,iax:iaz)+p%mf_EMF
         endif
 !
@@ -1907,6 +1925,7 @@ if (ip<10) print*,'AXEL3, p%mf_EMF(:,2)=',p%mf_EMF(:,2)
         idiag_qsm=0; idiag_qpm=0; idiag_qem=0;
         idiag_EMFmz1=0; idiag_EMFmz2=0; idiag_EMFmz3=0; idiag_peffmxz=0
         idiag_qpmz=0; idiag_alpmxz=0
+        idiag_alpKm=0; idiag_alpKjbm=0
       endif
 !
 !  Check for those quantities that we want to evaluate online.
@@ -1915,6 +1934,8 @@ if (ip<10) print*,'AXEL3, p%mf_EMF(:,2)=',p%mf_EMF(:,2)
         call parse_name(iname,cname(iname),cform(iname),'qsm',idiag_qsm)
         call parse_name(iname,cname(iname),cform(iname),'qpm',idiag_qpm)
         call parse_name(iname,cname(iname),cform(iname),'qem',idiag_qem)
+        call parse_name(iname,cname(iname),cform(iname),'alpKm',idiag_alpKm)
+        call parse_name(iname,cname(iname),cform(iname),'alpKjbm',idiag_alpKjbm)
       enddo
 !
 !  Check for those quantities for which we want xy-averages.
@@ -2122,5 +2143,22 @@ if (ip<10) print*,'AXEL3, p%mf_EMF(:,2)=',p%mf_EMF(:,2)
       endif
 !
     endsubroutine refresh_fluc_alpha_phase
+!***********************************************************************
+    subroutine pushpars2c(p_par)
+
+    use Syscalls, only: copy_addr
+    use General, only: string_to_enum
+
+    integer, parameter :: n_pars=1100
+    integer(KIND=ikind8), dimension(n_pars) :: p_par
+
+    call copy_addr(etat_x,p_par(1)) ! (nx)
+    call copy_addr(etat_y,p_par(2)) ! (my)
+    call copy_addr(etat_z,p_par(3)) ! (mz)
+    call copy_addr(detat_x,p_par(4)) ! (nx)
+    call copy_addr(detat_y,p_par(5)) ! (my)
+    call copy_addr(detat_z,p_par(6)) ! (mz)
+
+    endsubroutine
 !***********************************************************************
 endmodule Magnetic_meanfield

@@ -38,6 +38,7 @@ module Particles_coagulation
   real, pointer :: rhs_poisson_const
   real :: tstart_droplet_coagulation=impossible
   real :: reference_radius=5e-5
+  real :: part_melt_temp=0.
   logical :: ldroplet_coagulation_runtime=.false.
   logical :: lcoag_simultaneous=.false., lnoselfcollision=.true.
   logical :: lshear_in_vp=.true.
@@ -67,7 +68,7 @@ module Particles_coagulation
   integer :: idiag_ncoagpm=0, idiag_ncoagpartpm=0, idiag_dt1_coag_par=0
 !
   real :: deltad = 1., a0 = 1.
-  real :: r1, r2, r3, r4, r5, r6, r7, r8, r_diff
+  real :: r1=0., r2=0., r3=0., r4=0., r5=0., r6=0., r7=0., r8=0., r_diff=0.
   integer :: idiag_k100_100=0, idiag_k100_80=0, idiag_k100_60=0, idiag_k100_50=0, &
              idiag_k100_40=0, idiag_k100_30=0, idiag_k100_20=0, idiag_k100_10=0, &
              idiag_k80_80=0, idiag_k80_60=0, idiag_k80_50=0, idiag_k80_40=0, &
@@ -93,7 +94,7 @@ module Particles_coagulation
       sphericalKernel, normal_coagulation, tstart_droplet_coagulation, &
       lcheck_reference_radius, reference_radius, &
       lremove_particle_phys, lremove_particle, lremove_particle2, &
-      lcollision_output_swapped
+      lcollision_output_swapped, part_melt_temp
 !
   contains
 !***********************************************************************
@@ -196,7 +197,7 @@ module Particles_coagulation
         return
       end if
 !
-      if (lfirst.and.ldt) then
+      if (lupdate_courant_dt) then
 !
 !  Create list of shepherd and neighbour particles for each grid cell in the
 !  current pencil.
@@ -259,7 +260,7 @@ module Particles_coagulation
                   if (sum((vpk-vpj)*(xpk-xpj))<0.0) then
                     deltavjk=sqrt(sum((vpk-vpj)**2))
                     dt1_coag_par=dt1_coag_par+ &
-                        pi*(fp(k,iap)+fp(k,iap))**2*deltavjk* &
+                        pi*(fp(j,iap)+fp(k,iap))**2*deltavjk* &
                         min(npswarmj,npswarmk)
                   endif
 !
@@ -507,6 +508,14 @@ module Particles_coagulation
                     endif
                   endif
 !
+!  A collision can not result in a coagulation if both particles are frozen
+!
+                  if (lparticles_temperature) then
+                    if (fp(k,iTp)<part_melt_temp .and. &
+                         fp(j,iTp)<part_melt_temp) then
+                      tau_coll1=0.0
+                    endif
+                  endif
                   if (tau_coll1/=0.0) then
 !
 !  The probability for a collision in this time-step is dt/tau_coll.
@@ -845,8 +854,8 @@ module Particles_coagulation
 !
       k=1
       do while (.true.)
-        if (fp(k,iap)<0.0) then
-          fp(k,iap)=-fp(k,iap)
+        if (fp(k,iap)<0.0 .and. k<=npar_loc) then
+          fp(k,iap)=-fp(k,iap)          
           call remove_particle(fp,ipar,k)
         else
           k=k+1

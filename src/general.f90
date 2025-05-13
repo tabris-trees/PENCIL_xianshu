@@ -5,13 +5,14 @@
 module General
 !
   use Cparam
+  use Cdata, only: n2,m2,l2,n2i,m2i,l2i
 !
   implicit none
 !
   private
 !
   public :: gaunoise_number
-  public :: safe_character_assign, safe_character_append, safe_character_prepend
+  public :: safe_character_assign, safe_character_append, safe_character_prepend, safe_string_replace
   public :: lower_case,upper_case
   public :: random_seed_wrapper
   public :: random_number_wrapper, random_gen, normal_deviate
@@ -59,7 +60,7 @@ module General
   public :: reduce_grad_dim
   public :: meshgrid
   public :: linspace
-  public :: linear_interpolate_2d, linear_interpolate_1d, get_linterp_weights_1D
+  public :: linear_interpolate_2d, linear_interpolate_1d, get_linterp_weights_1D, interpol_tabulated
   public :: chk_time
   public :: get_species_nr
   public :: get_from_nml_str,get_from_nml_log,get_from_nml_real,get_from_nml_int,convert_nml
@@ -67,7 +68,45 @@ module General
   public :: qualify_position_bilin, qualify_position_bicub, &
             qualify_position_biquin
   public :: binomial,merge_lists,reallocate
+  public :: point_and_get_size, allocate_using_dims
+!$ public :: signal_wait, signal_send, signal_init, get_cpu, set_cpu, omp_single
+  public :: string_to_enum
+! 
 !
+!  State and default generator of random numbers.
+!
+  integer, save, dimension(mseed) :: rstate=0, rstate2=0
+  character (len=labellen) :: random_gen='min_std'
+!
+!  Indicators for situations in which the interpolation stencil overlaps with
+!  the
+!  present and the neighboring processor domain: L/R - at left/right domain
+!  bound; GAP - in gap; MARG/MARG2 - one/two cell(s) away from domain bound; 
+!  NEIGH/NEIGH2 - in domain of neighboring processor one/two cell(s) away from
+!  domain bound. 
+!                
+  integer, parameter :: LGAP=-3, RGAP=3, NOGAP=0, LNEIGH=-4, RNEIGH=4, LMARG=-2, RMARG=2, &          
+                        LMARG2=-1, RMARG2=1, LNEIGH2=-5, RNEIGH2=5
+!
+!  Global parameters related to the scale factor.
+!  The input data file contains: t_file, scl_factor, Hp_file, appa_file
+!  We use logarithmic interpolation for t_file, scl_factor, and Hp_file,
+!  but not for appa_file, because its value is zero for matter domination.
+!
+ !real, dimension(:), allocatable :: t_file, scl_factor, Hp_file, appa_file
+ !real, dimension(:), allocatable :: lgt_file, lgff, lgff2, lgff3, lgff4, lgff5
+ !logical :: lread_scl_factor_file_exists
+ !integer :: idt_file_safety=12
+ !integer :: nt_file, it_file, iTij=0
+ !real :: lgt0, dlgt, H0=1.
+ !real :: lgt1, lgt2, lgf1, lgf2, lgf
+ !real :: lgt_ini, a_ini, Hp_ini, app_om=0
+! 
+!$  interface signal_wait
+!$    module procedure signal_wait_single
+!$    module procedure signal_wait_multi
+!$  endinterface
+! 
   interface random_number_wrapper
     module procedure random_number_wrapper_0
     module procedure random_number_wrapper_1
@@ -80,6 +119,7 @@ module General
     module procedure keep_compiler_quiet_r2d
     module procedure keep_compiler_quiet_r3d
     module procedure keep_compiler_quiet_r4d
+    module procedure keep_compiler_quiet_r5d
     module procedure keep_compiler_quiet_p
     module procedure keep_compiler_quiet_bc
     module procedure keep_compiler_quiet_sl
@@ -173,35 +213,128 @@ module General
   interface transform_spher_cart
     module procedure transform_spher_cart_other
   endinterface
+
+  interface point_and_get_size
+    module procedure point_and_get_size_1d
+    module procedure point_and_get_size_2d
+    module procedure point_and_get_size_2d_int
+    module procedure point_and_get_size_3d
+    module procedure point_and_get_size_4d
+  end interface
+
+  interface allocate_using_dims
+    module procedure allocate_using_dims_1d
+    module procedure allocate_using_dims_2d
+    module procedure allocate_using_dims_2d_int
+    module procedure allocate_using_dims_3d
+    module procedure allocate_using_dims_4d
+  end interface
 !
-!  State and default generator of random numbers.
+!  TP: structures holding array dimensions
+!  used with pointers with size info
 !
-  integer, save, dimension(mseed) :: rstate=0, rstate2=0
-  character (len=labellen) :: random_gen='min_std'
+  type, public :: single_dim_array_dims
+    integer :: size 
+  end type single_dim_array_dims 
+
+  type, public :: two_dim_array_dims
+    integer :: x
+    integer :: y
+  end type two_dim_array_dims 
+
+  type, public :: three_dim_array_dims
+    integer :: x
+    integer :: y
+    integer :: z
+  end type three_dim_array_dims 
+
+  type, public :: four_dim_array_dims
+    integer :: x
+    integer :: y
+    integer :: z
+    integer :: w
+  end type four_dim_array_dims 
 !
-!  Indicators for situations in which the interpolation stencil overlaps with
-!  the
-!  present and the neighboring processor domain: L/R - at left/right domain
-!  bound; GAP - in gap; MARG/MARG2 - one/two cell(s) away from domain bound; 
-!  NEIGH/NEIGH2 - in domain of neighboring processor one/two cell(s) away from
-!  domain bound. 
-!                
-  integer, parameter :: LGAP=-3, RGAP=3, NOGAP=0, LNEIGH=-4, RNEIGH=4, LMARG=-2, RMARG=2, &          
-                        LMARG2=-1, RMARG2=1, LNEIGH2=-5, RNEIGH2=5
+!  TP: structures holding a pointer to an array and the corresponding arrays dimensions
 !
-!  Global parameters related to the scale factor.
-!  The input data file contains: t_file, scl_factor, Hp_file, appa_file
-!  We use logarithmic interpolation for t_file, scl_factor, and Hp_file,
-!  but not for appa_file, because its value is zero for matter domination.
+  type, public :: pointer_with_size_info_1d
+    real, pointer, dimension(:) :: data
+    type(single_dim_array_dims) :: dims
+  end type
+
+  type, public :: pointer_with_size_info_2d
+    real, pointer, dimension(:,:) :: data
+    type(two_dim_array_dims) :: dims
+  end type
+
+  type, public :: pointer_with_size_info_2d_int
+    integer, pointer, dimension(:,:) :: data
+    type(two_dim_array_dims) :: dims
+  end type
+
+  type, public :: pointer_with_size_info_3d
+    real, pointer, dimension(:,:,:) :: data
+    type(three_dim_array_dims) :: dims
+  end type
+
+  type, public :: pointer_with_size_info_4d
+    real, pointer, dimension(:,:,:,:) :: data
+    type(four_dim_array_dims) :: dims
+  end type
+  !This is needed to make an array of logical pointers
+  !If someone knows a better way to do this we can remove this
+  type, public :: lpointer
+    logical, pointer :: p
+  end type
 !
- !real, dimension(:), allocatable :: t_file, scl_factor, Hp_file, appa_file
- !real, dimension(:), allocatable :: lgt_file, lgff, lgff2, lgff3, lgff4, lgff5
- !logical :: lread_scl_factor_file_exists
- !integer :: idt_file_safety=12
- !integer :: nt_file, it_file, iTij=0
- !real :: lgt0, dlgt, H0=1.
- !real :: lgt1, lgt2, lgf1, lgf2, lgf
- !real :: lgt_ini, a_ini, Hp_ini, app_om=0
+! TP: type to make interop with C easier
+!
+  type int3
+    integer :: x, y, z
+  end type
+!
+! TP: used for morton curve process mapping (come from morton_helper.c)
+!
+  interface
+    pure type(int3) function getmortonrank3d(rank, decomp_x, decomp_y, decomp_z) result(res)
+      import int3
+      integer, intent(in) :: rank, decomp_x, decomp_y, decomp_z
+    endfunction
+  endinterface
+!
+  interface
+    pure integer function getmortonrank(x, y, z, decomp_x, decomp_y, decomp_z)
+      integer, intent(in) ::  x, y, z, decomp_x, decomp_y, decomp_z
+    endfunction
+  endinterface
+!
+! For signaling across threads
+!
+  interface
+    subroutine cond_wait_single(cond_handle, flag, value)
+      integer :: cond_handle
+      logical, volatile :: flag, value
+    endsubroutine
+  endinterface
+!
+  interface
+    subroutine cond_signal(cond_handle)
+      integer :: cond_handle
+    endsubroutine
+  endinterface
+
+!$ interface
+!$   integer function get_cpu_c()
+!$   endfunction get_cpu_c
+!$ endinterface
+!$
+!$ interface
+!$   subroutine set_cpu_c(core_id)
+!$     integer :: core_id
+!$   endsubroutine set_cpu_c
+!$ endinterface
+!
+  integer, parameter :: DIAG_COND = 1
 !
   include 'general.h'
   !include 'general_f2003.h'
@@ -213,14 +346,16 @@ module General
 !
 !  16-sep-15/ccyang: coded.
 !
-      use Cdata, only: lprocz_slowest,nprocx_node,nprocy_node,nprocz_node
+      use Cdata, only: lprocz_slowest,lmorton_curve,nprocx_node,nprocy_node,nprocz_node
 !
       integer, intent(in) :: ipx, ipy, ipz
 !
       if (.false..and.all((/nprocx_node,nprocy_node,nprocz_node/)>0)) then
         find_proc = find_proc_node_localty(ipx, ipy, ipz)
       else
-        if (lprocz_slowest) then
+        if (lmorton_curve) then
+          find_proc = getmortonrank(ipx,ipy,ipz,nprocx,nprocy,nprocz)
+        else if (lprocz_slowest) then
           find_proc = modulo(ipz,nprocz) * nprocxy + modulo(ipy,nprocy) * nprocx + modulo(ipx,nprocx)
         else
           find_proc = modulo(ipy,nprocy) * nprocxz + modulo(ipz,nprocz) * nprocx + modulo(ipx,nprocx)
@@ -252,16 +387,18 @@ module General
            
     endfunction find_proc_node_localty
 !***********************************************************************
-    pure integer function find_proc_general(ipx, ipy, ipz, nprocx, nprocy, nprocz, lprocz_slowest)
+    pure integer function find_proc_general(ipx, ipy, ipz, nprocx, nprocy, nprocz, lprocz_slowest, lmorton_curve)
 !
 !  Returns the rank of a process given its position in (ipx,ipy,ipz).
 !
 !  23-may-22/monteiro: coded.
 !
       integer, intent(in) :: ipx, ipy, ipz, nprocx, nprocy, nprocz 
-      logical, intent(in), optional :: lprocz_slowest
+      logical, intent(in), optional :: lprocz_slowest, lmorton_curve
 !
-      if (loptest(lprocz_slowest,.true.)) then
+      if (loptest(lmorton_curve,.false.)) then
+        find_proc_general = getmortonrank(ipx,ipy,ipz,nprocx,nprocy,nprocz)
+      else if (loptest(lprocz_slowest,.true.)) then
         find_proc_general = modulo(ipz,nprocz) * nprocx*nprocy + modulo(ipy,nprocy) * nprocx + modulo(ipx,nprocx)
       else
         find_proc_general = modulo(ipy,nprocy) * nprocx*nprocz + modulo(ipz,nprocz) * nprocx + modulo(ipx,nprocx)
@@ -269,7 +406,7 @@ module General
 !
     endfunction find_proc_general
 !***********************************************************************
-    subroutine find_proc_coords_general(rank, nprocx, nprocy, nprocz, ipx, ipy, ipz)
+    subroutine find_proc_coords_general(rank, nprocx, nprocy, nprocz, ipx, ipy, ipz, lmorton_curve)
 !
 !  Determines the Cartesian processor coordinates ip[xyz] of processor rank for
 !  processor layout defined by nproc[xyz].
@@ -277,25 +414,40 @@ module General
 !  6-dec-22/MR: coded
 !
       integer :: rank, nprocx, nprocy, nprocz, ipx, ipy, ipz
-
-      ipx = modulo(rank,nprocx)
-      ipy = modulo(rank/nprocx,nprocy)
-      ipz = rank/(nprocx*nprocy)
+      logical, intent(in), optional :: lmorton_curve
+      type(int3) :: proc_coords
+      
+      if(loptest(lmorton_curve)) then 
+         proc_coords = getmortonrank3d(rank,nprocx,nprocy,nprocz)
+         ipx = proc_coords%x
+         ipy = proc_coords%y
+         ipz = proc_coords%z
+      else
+        ipx = modulo(rank,nprocx)
+        ipy = modulo(rank/nprocx,nprocy)
+        ipz = rank/(nprocx*nprocy)
+      endif
 
     endsubroutine find_proc_coords_general
 !***********************************************************************
     subroutine find_proc_coords(rank,ipx,ipy,ipz)
 
-      use Cdata, only: lprocz_slowest, nprocx_node, nprocy_node, nprocz_node
+      use Cdata, only: lprocz_slowest, lmorton_curve, nprocx_node, nprocy_node, nprocz_node
 
       integer, intent(in) :: rank
       integer, intent(out) :: ipx, ipy, ipz
+      type(int3) :: proc_coords
 
       if (.false..and.all((/nprocx_node,nprocy_node,nprocz_node/)>0)) then
         call find_proc_coords_node_localty(rank,ipx,ipy,ipz)
 print*, 'rank,ipx,ipy,ipz, find_proc=',rank, ipx,ipy,ipz, find_proc_node_localty(ipx,ipy,ipz)
       else
-        if (lprocz_slowest) then
+        if (lmorton_curve) then
+          proc_coords = getmortonrank3d(rank,nprocx,nprocy,nprocz)
+          ipx = proc_coords%x
+          ipy = proc_coords%y
+          ipz = proc_coords%z
+        else if (lprocz_slowest) then
           ipx = modulo(rank, nprocx)
           ipy = modulo(rank/nprocx, nprocy)
           ipz = rank/nprocxy
@@ -975,6 +1127,27 @@ print*, 'rank,ipx,ipy,ipz, find_proc=',rank, ipx,ipy,ipz, find_proc_node_localty
 !
     endsubroutine keep_compiler_quiet_r4d
 !***********************************************************************
+    subroutine keep_compiler_quiet_r5d(v1,v2,v3,v4)
+!
+!  Call this to avoid compiler warnings about unused variables.
+!  Optional arguments allow for more variables of the same shape+type.
+!
+!  4-apr-25/TP: coded
+!
+      real, dimension(:,:,:,:,:) :: v1, v2, v3, v4
+      optional                 ::     v2, v3, v4
+!
+      if (ALWAYS_FALSE) then
+        write(0,*) 'keep_compiler_quiet_r5d: never got here...'
+        print*,                  minval(v1)
+        if (present(v2)) print*, minval(v2)
+        if (present(v3)) print*, minval(v3)
+        if (present(v4)) print*, minval(v4)
+        STOP 1
+      endif
+!
+    endsubroutine keep_compiler_quiet_r5d
+!***********************************************************************
     subroutine keep_compiler_quiet_p(v1,v2,v3,v4)
 !
 !  Call this to avoid compiler warnings about unused variables.
@@ -1370,6 +1543,39 @@ print*, 'rank,ipx,ipy,ipz, find_proc=',rank, ipx,ipy,ipz, find_proc_node_localty
       endif
 !
     endsubroutine safe_character_assign
+!***********************************************************************
+    subroutine safe_string_replace(string,substr,replmt)
+
+      character(LEN=*), intent(INOUT) :: string
+      character(LEN=*), intent(IN) :: substr,replmt
+
+      integer :: istart, istop, lensub, lenstr
+
+      lenstr = len(string)
+      lensub = len(substr)
+      istart = index(string,substr)
+
+      if (istart + len(replmt)-1 > lenstr) then
+        print*, "safe_string_replace: RUNTIME ERROR: REPLACEMENT TOO LONG - DECLINED"
+        return
+      endif
+      istop = istart+lensub
+
+      if (istart>1) then
+        if (istop>lenstr) then
+          string = string(:istart-1)//replmt
+        else
+          string = string(:istart-1)//replmt//string(istop:)
+        endif
+      else
+        if (istop>lenstr) then
+          string = replmt
+        else
+          string = replmt//string(istop:)
+        endif
+      endif
+
+    endsubroutine
 !***********************************************************************
     subroutine safe_character_append_2(str1,str2)
 !
@@ -4239,7 +4445,7 @@ endfunction
     
     j=0
     do i = 1, size(haystack)
-      if (needle(1) <= haystack(i) .and. needle(2) <= haystack(i)) then
+      if (needle(1) <= haystack(i) .and. haystack(i) <= needle(2)) then
         j=j+1
         if (present(positions)) positions(j) = i
       endif
@@ -6424,5 +6630,1095 @@ iloop:do i=1,size(list2)
       len1=ind
 
     endsubroutine merge_lists
+!***********************************************************************
+    function interpol_tabulated (needle, haystack)
+!
+! Find the interpolated position of a given value in a tabulated values array.
+! Bisection search algorithm with preset range guessing by previous value.
+! Returns the interpolated position of the needle in the haystack.
+! If needle is not inside the haystack, an extrapolated position is returned.
+!
+! 09-feb-2011/Bourdin.KIS: coded
+! 17-may-2015/piyali.chatterjee : copied from special/solar_corona.f90
+
+      real :: interpol_tabulated
+      real, intent(in) :: needle
+      real, dimension (:), intent(in) :: haystack
+!
+      integer, save :: lower=1, upper=1
+      integer :: mid, num, inc
+!
+      num = size (haystack, 1)
+      interpol_tabulated = -impossible
+      if (num < 2) then
+
+
+
+      if (lower >= num) lower = num - 1
+        if ((upper <= lower) .or. (upper > num)) upper = num
+!
+        if (haystack(lower) > haystack(upper)) then
+!
+!  Descending array:
+!
+          ! Search for lower limit, starting from last known position
+          inc = 2
+          do while ((lower > 1) .and. (needle > haystack(lower)))
+            upper = lower
+            lower = lower - inc
+            if (lower < 1) lower = 1
+            inc = inc * 2
+          enddo
+!
+          ! Search for upper limit, starting from last known position!
+          inc = 2
+          do while ((upper < num) .and. (needle < haystack(upper)))
+            lower = upper
+            upper = upper + inc
+            if (upper > num) upper = num
+            inc = inc * 2
+          enddo
+!
+          if (needle < haystack(upper)) then
+            ! Extrapolate needle value below range
+            lower = num - 1
+          elseif (needle > haystack(lower)) then
+            ! Extrapolate needle value above range
+            lower = 1
+          else
+            ! Interpolate needle value
+            do while (lower+1 < upper)
+              mid = lower + (upper - lower) / 2
+              if (needle >= haystack(mid)) then
+                upper = mid
+              else
+                lower = mid
+              endif
+            enddo
+          endif
+          upper = lower + 1
+          interpol_tabulated = lower + (haystack(lower) - needle)/(haystack(lower) - haystack(upper))
+!
+        elseif (haystack(lower) < haystack(upper)) then
+!
+!  Ascending array:
+!
+          ! Search for lower limit, starting from last known position
+          inc = 2
+          do while ((lower > 1) .and. (needle < haystack(lower)))
+            upper = lower
+            lower = lower - inc
+            if (lower < 1) lower = 1
+            inc = inc * 2
+          enddo
+!
+          ! Search for upper limit, starting from last known position
+          inc = 2
+          do while ((upper < num) .and. (needle > haystack(upper)))
+            lower = upper
+            upper = upper + inc
+            if (upper > num) upper = num
+            inc = inc * 2
+          enddo
+!
+          if (needle > haystack(upper)) then
+            ! Extrapolate needle value above range
+            lower = num - 1
+          elseif (needle < haystack(lower)) then
+            ! Extrapolate needle value below range
+            lower = 1
+          else
+            ! Interpolate needle value
+            do while (lower+1 < upper)
+              mid = lower + (upper - lower) / 2
+              if (needle < haystack(mid)) then
+                upper = mid
+              else
+                lower = mid
+              endif
+            enddo
+          endif
+          upper = lower + 1
+          interpol_tabulated = lower + (needle - haystack(lower))/(haystack(upper) - haystack(lower))
+        else
+          interpol_tabulated = impossible
+        endif
+!
+!
+!
+      endif ! (num < 2)
+
+    endfunction interpol_tabulated
+!***********************************************************************
+    subroutine allocate_using_dims_1d(src, dims)
+!
+! Allocates allocatable arrays usind 1d dimensions
+!
+! 7-feb-24/TP: coded
+!
+    real, allocatable, dimension(:), target :: src
+    type(single_dim_array_dims) :: dims
+
+      if (.not. allocated(src)) allocate(src(dims%size))
+
+    endsubroutine allocate_using_dims_1d
+!***********************************************************************
+    subroutine allocate_using_dims_2d(src, dims)
+!
+! Allocates allocatable arrays usind 2d dimensions
+!
+! 7-feb-24/TP: coded
+!
+    real, allocatable, dimension(:,:), target :: src
+    type(two_dim_array_dims) :: dims
+
+      if (.not. allocated(src)) allocate(src(dims%x,dims%y))
+
+    endsubroutine allocate_using_dims_2d
+!***********************************************************************
+    subroutine allocate_using_dims_2d_int(src, dims)
+!
+! Allocates allocatable integer arrays usind 2d dimensions
+!
+! 7-feb-24/TP: coded
+!
+    integer, allocatable, dimension(:,:), target :: src
+    type(two_dim_array_dims) :: dims
+
+      if (.not. allocated(src)) allocate(src(dims%x,dims%y))
+
+    endsubroutine allocate_using_dims_2d_int
+!***********************************************************************
+    subroutine allocate_using_dims_3d(src, dims)
+!
+! Allocates allocatable arrays usind 3d dimensions
+!
+! 7-feb-24/TP: coded
+!
+    real, allocatable, dimension(:,:,:), target :: src
+    type(three_dim_array_dims) :: dims
+
+      if (.not. allocated(src)) allocate(src(dims%x,dims%y,dims%z))
+
+    endsubroutine allocate_using_dims_3d
+!***********************************************************************
+    subroutine allocate_using_dims_4d(src, dims)
+!
+! Allocates allocatable arrays usind 4d dimensions
+!
+! 7-feb-24/TP: coded
+!
+    real, allocatable, dimension(:,:,:,:), target :: src
+    type(four_dim_array_dims) :: dims
+
+      if (.not. allocated(src)) allocate(src(dims%x,dims%y,dims%z,dims%w))
+
+    endsubroutine allocate_using_dims_4d
+!***********************************************************************
+    subroutine point_and_get_size_1d(dst, src)
+!
+! Associates a pointer to 1d array and stores the dimension info alongside the pointer 
+!
+! 7-feb-24/TP: coded
+!
+    type(pointer_with_size_info_1d) :: dst
+    real, allocatable, dimension(:), target :: src
+    type(single_dim_array_dims) :: dim
+
+      if (allocated(src)) then
+        dst%data => src
+        dst%dims%size= size(src)
+      endif
+
+    endsubroutine
+!***********************************************************************
+    subroutine point_and_get_size_2d(dst, src)
+!
+! Associates a pointer to 2d array and stores the dimension info alongside the pointer 
+!
+! 7-feb-24/TP: coded
+!
+    type(pointer_with_size_info_2d) :: dst
+    real, allocatable, dimension(:,:), target :: src
+    type(two_dim_array_dims) :: dim
+
+      if (allocated(src)) then
+        dst%data => src
+        dst%dims%x = size(src,1)
+        dst%dims%y = size(src,2)
+      endif
+
+    endsubroutine point_and_get_size_2d
+!***********************************************************************
+    subroutine point_and_get_size_2d_int(dst, src)
+!
+! Associates a pointer to 2d integer array and stores the dimension info alongside the pointer 
+!
+! 7-feb-24/TP: coded
+!
+    type(pointer_with_size_info_2d_int) :: dst
+    integer, allocatable, dimension(:,:), target :: src
+
+      if (allocated(src)) then
+        dst%data => src
+        dst%dims%x = size(src,1)
+        dst%dims%y = size(src,2)
+      endif
+
+    endsubroutine point_and_get_size_2d_int
+!***********************************************************************
+    subroutine point_and_get_size_3d(dst, src)
+!
+! Associates a pointer to 3d array and stores the dimension info alongside the pointer 
+!
+! 7-feb-24/TP: coded
+!
+    type(pointer_with_size_info_3d) :: dst
+    real, allocatable, dimension(:,:,:), target :: src
+
+      if (allocated(src)) then
+        dst%data => src
+        dst%dims%x = size(src,1)
+        dst%dims%y = size(src,2)
+        dst%dims%z = size(src,3)
+      endif
+
+    endsubroutine
+!***********************************************************************
+    subroutine point_and_get_size_4d(dst, src)
+!
+! Associates a pointer to 4d array and stores the dimension info alongside the pointer 
+!
+! 7-feb-24/TP: coded
+!
+    type(pointer_with_size_info_4d) :: dst
+    real, allocatable, dimension(:,:,:,:), target :: src
+
+      if (allocated(src)) then
+        dst%data => src
+        dst%dims%x = size(src,1)
+        dst%dims%y = size(src,2)
+        dst%dims%z = size(src,3)
+        dst%dims%w = size(src,4)
+      endif
+
+    endsubroutine
+!***********************************************************************
+    subroutine string_to_enum(dst,src)
+
+        integer :: dst
+        character(len=*) :: src
+
+        select case(src)
+        case('pde')
+          dst = enum_pde_string
+        case('before lanelastic')
+          dst = enum_before_lanelastic_string
+        case('finished boundconds_z')
+          dst = enum_finished_boundconds_z_string
+        case('calc_pencils_grid')
+          dst = enum_calc_pencils_grid_string
+        case('position vector for ')
+          dst = enum_position_vector_for__string
+        case('non-cartesian coordinates')
+          dst = enum_nonZcartesian_coordinates_string
+        case('co-latitudinal unit vector for ')
+          dst = enum_coZlatitudinal_unit_vector_for__string
+        case('calc_pencils_hydro_linearized')
+          dst = enum_calc_pencils_hydro_linearized_string
+        case('u2 pencil not calculated')
+          dst = enum_u2_pencil_not_calculated_string
+        case('sij2 pencil not calculated')
+          dst = enum_sij2_pencil_not_calculated_string
+        case('uij5 pencil not calculated')
+          dst = enum_uij5_pencil_not_calculated_string
+        case('o2 or oxu2 pencils not calculate')
+          dst = enum_o2_or_oxu2_pencils_not_calculate_string
+        case('ou or oxu pencils not calculated')
+          dst = enum_ou_or_oxu_pencils_not_calculated_string
+        case('ugu2 pencil not calculated')
+          dst = enum_ugu2_pencil_not_calculated_string
+        case('ujukl pencils not calculated')
+          dst = enum_ujukl_pencils_not_calculated_string
+        case('calc_pencils_hydro: call gij_etc')
+          dst = enum_calc_pencils_hydroZ_call_gij_etc_string
+        case('no linearized weno transport')
+          dst = enum_no_linearized_weno_transport_string
+        case('calc_pencils_hydro_nonlinear')
+          dst = enum_calc_pencils_hydro_nonlinear_string
+        case('calc_pencils_density')
+          dst = enum_calc_pencils_density_string
+        case('del6lnrho for linear mass density')
+          dst = enum_del6lnrho_for_linear_mass_density_string
+        case('hlnrho linear mass density')
+          dst = enum_hlnrho_linear_mass_density_string
+        case('density:iproc,it,m,n=')
+          dst = enum_densityZiprocZitZmZnZ_string
+        case('nans in ac_transformed_pencil_glnrho')
+          dst = enum_nans_in_ac_transformed_pencil_glnrho_string
+        case('ugrho for logarithmic mass density')
+          dst = enum_ugrho_for_logarithmic_mass_density_string
+        case('del2rho for logarithmic mass density')
+          dst = enum_del2rho_for_logarithmic_mass_density_string
+        case('del6rho for logarithmic mass density')
+          dst = enum_del6rho_for_logarithmic_mass_density_string
+        case('calc_pencils_density_pnc')
+          dst = enum_calc_pencils_density_pnc_string
+        case('rhos1')
+          dst = enum_rhos1_string
+        case('glnrhos')
+          dst = enum_glnrhos_string
+        case('calc_pencils_eos')
+          dst = enum_calc_pencils_eos_string
+        case('rho1gpp not available')
+          dst = enum_rho1gpp_not_available_string
+        case('rho1gpp not available 2')
+          dst = enum_rho1gpp_not_available_2_string
+        case('del6ss for ilnrho_lntt')
+          dst = enum_del6ss_for_ilnrho_lntt_string
+        case('no gradients yet for localisothermal')
+          dst = enum_no_gradients_yet_for_localisothermal_string
+        case('entropy not needed for localisothermal')
+          dst = enum_entropy_not_needed_for_localisothermal_string
+        case('full equation of state for ilnrho_cs2')
+          dst = enum_full_equation_of_state_for_ilnrho_cs2_string
+        case('local isothermal case for ipp_ss')
+          dst = enum_local_isothermal_case_for_ipp_ss_string
+        case('isentropic for (pp,lntt)')
+          dst = enum_isentropic_for_ZppZlnttZ_string
+        case('local isothermal case for ipp_cs2')
+          dst = enum_local_isothermal_case_for_ipp_cs2_string
+        case('del6ss for ilnrho_cs2')
+          dst = enum_del6ss_for_ilnrho_cs2_string
+        case('geth is not available')
+          dst = enum_geth_is_not_available_string
+        case('del2eth is not available')
+          dst = enum_del2eth_is_not_available_string
+        case('eths is not available')
+          dst = enum_eths_is_not_available_string
+        case('geths is not available')
+          dst = enum_geths_is_not_available_string
+        case('hlntt for ilnrho_eth or irho_eth')
+          dst = enum_hlntt_for_ilnrho_eth_or_irho_eth_string
+        case('unknown combination of eos vars')
+          dst = enum_unknown_combination_of_eos_vars_string
+        case('calc_pencils_energy: max(advec_cs2) =')
+          dst = enum_calc_pencils_energyZ_maxZadvec_cs2Z_Z_string
+        case('carreau')
+          dst = enum_carreau_string
+        case('step')
+          dst = enum_step_string
+        case('getnu_non_newtonian:')
+          dst = enum_getnu_non_newtonianZ_string
+        case('no such nnewton_type: ')
+          dst = enum_no_such_nnewton_typeZ__string
+        case('calc_pencils_viscosity')
+          dst = enum_calc_pencils_viscosity_string
+        case('viscous heating ')
+          dst = enum_viscous_heating__string
+        case('not implemented for lvisc_hyper3_polar')
+          dst = enum_not_implemented_for_lvisc_hyper3_polar_string
+        case('not implemented for lvisc_hyper3_mesh')
+          dst = enum_not_implemented_for_lvisc_hyper3_mesh_string
+        case('not implemented for lvisc_hyper3_csmesh')
+          dst = enum_not_implemented_for_lvisc_hyper3_csmesh_string
+        case('del2fjv')
+          dst = enum_del2fjv_string
+        case('viscous heating term ')
+          dst = enum_viscous_heating_term__string
+        case('viscose')
+          dst = enum_viscose_string
+        case('init_uu')
+          dst = enum_init_uu_string
+        case('calc_pencils_magnetic_pencpar')
+          dst = enum_calc_pencils_magnetic_pencpar_string
+        case('accretor')
+          dst = enum_accretor_string
+        case('default')
+          dst = enum_default_string
+        case('calc_pencils_gravity')
+          dst = enum_calc_pencils_gravity_string
+        case('no such grav_type')
+          dst = enum_no_such_grav_type_string
+        case('duu_dt')
+          dst = enum_duu_dt_string
+        case('entered')
+          dst = enum_entered_string
+        case('duu_dt: solve')
+          dst = enum_duu_dtZ_solve_string
+        case('bcs for ')
+          dst = enum_bcs_for__string
+        case('ux')
+          dst = enum_ux_string
+        case('uy')
+          dst = enum_uy_string
+        case('uz')
+          dst = enum_uz_string
+        case('sld_char')
+          dst = enum_sld_char_string
+        case('coriolis_cylindrical: omega=')
+          dst = enum_coriolis_cylindricalZ_omegaZ_string
+        case('coriolis_cylindrical: omega=,theta=')
+          dst = enum_coriolis_cylindricalZ_omegaZZthetaZ_string
+        case('coriolis_cylindrical')
+          dst = enum_coriolis_cylindrical_string
+        case('coriolis_spherical: omega=')
+          dst = enum_coriolis_sphericalZ_omegaZ_string
+        case('coriolis_spherical: omega,theta,phi=')
+          dst = enum_coriolis_sphericalZ_omegaZthetaZphiZ_string
+        case('coriolis_spherical')
+          dst = enum_coriolis_spherical_string
+        case('for omega not aligned with z or y axis')
+          dst = enum_for_omega_not_aligned_with_z_or_y_axis_string
+        case('precession: omega_precession=')
+          dst = enum_precessionZ_omega_precessionZ_string
+        case('coriolis_cartesian')
+          dst = enum_coriolis_cartesian_string
+        case('if omega has y component')
+          dst = enum_if_omega_has_y_component_string
+        case('coriolis_xdep: ampl_omega=')
+          dst = enum_coriolis_xdepZ_ampl_omegaZ_string
+        case('duu_dt: max(advec_uu) =')
+          dst = enum_duu_dtZ_maxZadvec_uuZ_Z_string
+        case('nothing')
+          dst = enum_nothing_string
+        case('linear')
+          dst = enum_linear_string
+        case('inverse')
+          dst = enum_inverse_string
+        case('current')
+          dst = enum_current_string
+        case('lmagnetic must be true')
+          dst = enum_lmagnetic_must_be_true_string
+        case('bs04')
+          dst = enum_bs04_string
+        case('bs04c')
+          dst = enum_bs04c_string
+        case('bs04c1')
+          dst = enum_bs04c1_string
+        case('bs04m')
+          dst = enum_bs04m_string
+        case('hp09')
+          dst = enum_hp09_string
+        case('sx')
+          dst = enum_sx_string
+        case('solar_dc99')
+          dst = enum_solar_dc99_string
+        case('vertical_shear')
+          dst = enum_vertical_shear_string
+        case('vertical_compression')
+          dst = enum_vertical_compression_string
+        case('remove_vertical_shear')
+          dst = enum_remove_vertical_shear_string
+        case('vertical_shear_x')
+          dst = enum_vertical_shear_x_string
+        case('vertical_shear_x_sinz')
+          dst = enum_vertical_shear_x_sinz_string
+        case('vertical_shear_z')
+          dst = enum_vertical_shear_z_string
+        case('vertical_shear_z2')
+          dst = enum_vertical_shear_z2_string
+        case('vertical_shear_linear')
+          dst = enum_vertical_shear_linear_string
+        case('tachocline')
+          dst = enum_tachocline_string
+        case('solar_simple')
+          dst = enum_solar_simple_string
+        case('radial_uniform_shear')
+          dst = enum_radial_uniform_shear_string
+        case('breeze')
+          dst = enum_breeze_string
+        case('slow_wind')
+          dst = enum_slow_wind_string
+        case('radial_shear')
+          dst = enum_radial_shear_string
+        case('radial_shear_damp')
+          dst = enum_radial_shear_damp_string
+        case('damp_corona')
+          dst = enum_damp_corona_string
+        case('damp_horiz_vel')
+          dst = enum_damp_horiz_vel_string
+        case('latitudinal_shear')
+          dst = enum_latitudinal_shear_string
+        case('damp_jets')
+          dst = enum_damp_jets_string
+        case('spoke-like-nssl')
+          dst = enum_spokeZlikeZnssl_string
+        case('uumz_profile')
+          dst = enum_uumz_profile_string
+        case('omega_profile')
+          dst = enum_omega_profile_string
+        case('zero')
+          dst = enum_zero_string
+        case('0')
+          dst = enum_0_string
+        case('constant')
+          dst = enum_constant_string
+        case('initial-condition')
+          dst = enum_initialZcondition_string
+        case('finished')
+          dst = enum_finished_string
+        case('dlnrho_dt')
+          dst = enum_dlnrho_dt_string
+        case('dlnrho_dt: solve')
+          dst = enum_dlnrho_dtZ_solve_string
+        case('lnrho')
+          dst = enum_lnrho_string
+        case('surface_z')
+          dst = enum_surface_z_string
+        case('mass_source: cs20,cs0=')
+          dst = enum_mass_sourceZ_cs20Zcs0Z_string
+        case('mass_source')
+          dst = enum_mass_source_string
+        case('mass source with no profile')
+          dst = enum_mass_source_with_no_profile_string
+        case('exponential')
+          dst = enum_exponential_string
+        case('bump')
+          dst = enum_bump_string
+        case('bump2')
+          dst = enum_bump2_string
+        case('bumpr')
+          dst = enum_bumpr_string
+        case('bumpx')
+          dst = enum_bumpx_string
+        case('sph-step-down')
+          dst = enum_sphZstepZdown_string
+        case('const')
+          dst = enum_const_string
+        case('cylindric')
+          dst = enum_cylindric_string
+        case('no such mass_source_profile: ')
+          dst = enum_no_such_mass_source_profileZ__string
+        case('dlnrho_dt: diffrho=')
+          dst = enum_dlnrho_dtZ_diffrhoZ_string
+        case('dlnrho_dt: diffrho_shock=')
+          dst = enum_dlnrho_dtZ_diffrho_shockZ_string
+        case('dlnrho_dt: diffrho_hyper3=')
+          dst = enum_dlnrho_dtZ_diffrho_hyper3Z_string
+        case('dlnrho_dt: diffrho_hyper3_mesh=')
+          dst = enum_dlnrho_dtZ_diffrho_hyper3_meshZ_string
+        case('dlnrho_dt: diffrho_hyper3=(dx,dy,dz)=')
+          dst = enum_dlnrho_dtZ_diffrho_hyper3ZZdxZdyZdzZZ_string
+        case('dlnrho_dt: diffrho_hyper3_strict=')
+          dst = enum_dlnrho_dtZ_diffrho_hyper3_strictZ_string
+        case('dlnrho_dt: max(diffus_diffrho ) =')
+          dst = enum_dlnrho_dtZ_maxZdiffus_diffrho_Z_Z_string
+        case('dlnrho_dt: max(diffus_diffrho3) =')
+          dst = enum_dlnrho_dtZ_maxZdiffus_diffrho3Z_Z_string
+        case('before calc_diagnostics')
+          dst = enum_before_calc_diagnostics_string
+        case('denergy_dt: solve denergy_dt')
+          dst = enum_denergy_dtZ_solve_denergy_dt_string
+        case('ss')
+          dst = enum_ss_string
+        case('denergy_dt: lntt,cs2,cp1=')
+          dst = enum_denergy_dtZ_lnttZcs2Zcp1Z_string
+        case('denergy_dt: it')
+          dst = enum_denergy_dtZ_it_string
+        case('t')
+          dst = enum_t_string
+        case('ac_transformed_pencil_fpres =')
+          dst = enum_ac_transformed_pencil_fpres_Z_string
+        case('denergy_dt')
+          dst = enum_denergy_dt_string
+        case('')
+          dst = enum__string
+        case('calc_heatcond: hcond0=')
+          dst = enum_calc_heatcondZ_hcond0Z_string
+        case('calc_heatcond: lgravz=')
+          dst = enum_calc_heatcondZ_lgravzZ_string
+        case('calc_heatcond: fbot,ftop=')
+          dst = enum_calc_heatcondZ_fbotZftopZ_string
+        case('calc_heatcond')
+          dst = enum_calc_heatcond_string
+        case('nans in ac_transformed_pencil_glntt')
+          dst = enum_nans_in_ac_transformed_pencil_glntt_string
+        case('calc_heatcond: ')
+          dst = enum_calc_heatcondZ__string
+        case('calc_heatcond: nans in rho1')
+          dst = enum_calc_heatcondZ_nans_in_rho1_string
+        case('calc_heatcond: nans in del2ss')
+          dst = enum_calc_heatcondZ_nans_in_del2ss_string
+        case('calc_heatcond: nans in hcond')
+          dst = enum_calc_heatcondZ_nans_in_hcond_string
+        case('calc_heatcond: nans in 1/hcond')
+          dst = enum_calc_heatcondZ_nans_in_1Zhcond_string
+        case('calc_heatcond: nans in glhc')
+          dst = enum_calc_heatcondZ_nans_in_glhc_string
+        case('calc_heatcond: nans in chix')
+          dst = enum_calc_heatcondZ_nans_in_chix_string
+        case('calc_heatcond: nans in glnthcond')
+          dst = enum_calc_heatcondZ_nans_in_glnthcond_string
+        case('calc_heatcond: nans in g2')
+          dst = enum_calc_heatcondZ_nans_in_g2_string
+        case('calc_heatcond: nans in thdiff')
+          dst = enum_calc_heatcondZ_nans_in_thdiff_string
+        case('calc_heatcond: m,n,y(m),z(n)=')
+          dst = enum_calc_heatcondZ_mZnZyZmZZzZnZZ_string
+        case('nans in thdiff')
+          dst = enum_nans_in_thdiff_string
+        case('chi.dat')
+          dst = enum_chiZdat_string
+        case('hcond.dat')
+          dst = enum_hcondZdat_string
+        case('glhc.dat')
+          dst = enum_glhcZdat_string
+        case('heatcond.dat')
+          dst = enum_heatcondZdat_string
+        case('calc_heatcond: added thdiff')
+          dst = enum_calc_heatcondZ_added_thdiff_string
+        case('calc_heatcond_constk: hcond=')
+          dst = enum_calc_heatcond_constkZ_hcondZ_string
+        case('calc_heatcond_constk: added thdiff')
+          dst = enum_calc_heatcond_constkZ_added_thdiff_string
+        case('calc_heatcond_sfluct: chi_t=')
+          dst = enum_calc_heatcond_sfluctZ_chi_tZ_string
+        case('calc_heatcond_constchi: chi=')
+          dst = enum_calc_heatcond_constchiZ_chiZ_string
+        case('calc_heatcond_constchi: added thdiff')
+          dst = enum_calc_heatcond_constchiZ_added_thdiff_string
+        case('calc_heatcond_cspeed_chi: chi=')
+          dst = enum_calc_heatcond_cspeed_chiZ_chiZ_string
+        case('calc_heatcond_cspeed_chi: added thdiff')
+          dst = enum_calc_heatcond_cspeed_chiZ_added_thdiff_string
+        case('calc_heatcond_sqrtrhochi: chi_rho=')
+          dst = enum_calc_heatcond_sqrtrhochiZ_chi_rhoZ_string
+        case('calc_heatcond_sqrtrhochi: added thdiff')
+          dst = enum_calc_heatcond_sqrtrhochiZ_added_thdiff_string
+        case('calc_heatcond_shock: chi_shock=')
+          dst = enum_calc_heatcond_shockZ_chi_shockZ_string
+        case('calc_heatcond_shock: added thdiff')
+          dst = enum_calc_heatcond_shockZ_added_thdiff_string
+        case('calc_heatcond_shock_profr: added thdiff')
+          dst = enum_calc_heatcond_shock_profrZ_added_thdiff_string
+        case('calc_heatcond_hyper3: chi_hyper3=')
+          dst = enum_calc_heatcond_hyper3Z_chi_hyper3Z_string
+        case('calc_heatcond_hyper3: added thdiff')
+          dst = enum_calc_heatcond_hyper3Z_added_thdiff_string
+        case('spitzer.dat')
+          dst = enum_spitzerZdat_string
+        case('viscous.dat')
+          dst = enum_viscousZdat_string
+        case('enter heatcond hubeny')
+          dst = enum_enter_heatcond_hubeny_string
+        case('calc_heatcond_kramers: nans in rho1')
+          dst = enum_calc_heatcond_kramersZ_nans_in_rho1_string
+        case('calc_heatcond_kramers: nans in k/rho')
+          dst = enum_calc_heatcond_kramersZ_nans_in_kZrho_string
+        case('calc_heatcond_kramers: nans in del2ss')
+          dst = enum_calc_heatcond_kramersZ_nans_in_del2ss_string
+        case('calc_heatcond_kramers: nans in tt')
+          dst = enum_calc_heatcond_kramersZ_nans_in_tt_string
+        case('calc_heatcond_kramers: nans in glnt')
+          dst = enum_calc_heatcond_kramersZ_nans_in_glnt_string
+        case('calc_heatcond_kramers: nans in g2')
+          dst = enum_calc_heatcond_kramersZ_nans_in_g2_string
+        case('calc_heatcond_kramers: nans in thdiff')
+          dst = enum_calc_heatcond_kramersZ_nans_in_thdiff_string
+        case('calc_heatcond_kramers: m,n,y(m),z(n)=')
+          dst = enum_calc_heatcond_kramersZ_mZnZyZmZZzZnZZ_string
+        case('calc_heatcond_kramers')
+          dst = enum_calc_heatcond_kramers_string
+        case('calc_heatcond_kramers: added thdiff')
+          dst = enum_calc_heatcond_kramersZ_added_thdiff_string
+        case('calc_heatcond_chit: chi_t0=')
+          dst = enum_calc_heatcond_chitZ_chi_t0Z_string
+        case('calc_heatcond_chit: chi_t1=')
+          dst = enum_calc_heatcond_chitZ_chi_t1Z_string
+        case('calc_heatcond_smagorinsky: nans in rho1')
+          dst = enum_calc_heatcond_smagorinskyZ_nans_in_rho1_string
+        case('calc_heatcond_smagorinsky: nans in chix')
+          dst = enum_calc_heatcond_smagorinskyZ_nans_in_chix_string
+        case('calc_heatcond_smagorinsky: nans in tt')
+          dst = enum_calc_heatcond_smagorinskyZ_nans_in_tt_string
+        case('calc_heatcond_smagorinsky: nans in glnt')
+          dst = enum_calc_heatcond_smagorinskyZ_nans_in_glnt_string
+        case('calc_heatcond_smagorinsky: nans in g2')
+          dst = enum_calc_heatcond_smagorinskyZ_nans_in_g2_string
+        case('calc_heatcond_smagorinsky')
+          dst = enum_calc_heatcond_smagorinsky_string
+        case('calc_heatcond_smagorinsky: added thdiff')
+          dst = enum_calc_heatcond_smagorinskyZ_added_thdiff_string
+        case('newton.dat')
+          dst = enum_newtonZdat_string
+        case('calc_heat_cool_rtv')
+          dst = enum_calc_heat_cool_rtv_string
+        case('for pretend_lntt = t')
+          dst = enum_for_pretend_lntt_Z_t_string
+        case('cgs')
+          dst = enum_cgs_string
+        case('get_lnq')
+          dst = enum_get_lnq_string
+        case('tabulated values in lntt are invalid')
+          dst = enum_tabulated_values_in_lntt_are_invalid_string
+        case('too few tabulated values in lntt')
+          dst = enum_too_few_tabulated_values_in_lntt_string
+        case('rtv.dat')
+          dst = enum_rtvZdat_string
+        case('calc_heatcond_hyper3_polar: chi_hyper3=')
+          dst = enum_calc_heatcond_hyper3_polarZ_chi_hyper3Z_string
+        case('calc_heatcond_hyper3_mesh: chi_hyper3=')
+          dst = enum_calc_heatcond_hyper3_meshZ_chi_hyper3Z_string
+        case('gaussian-z')
+          dst = enum_gaussianZz_string
+        case('lin-z')
+          dst = enum_linZz_string
+        case('sin-z')
+          dst = enum_sinZz_string
+        case('surface_x')
+          dst = enum_surface_x_string
+        case('two-layer')
+          dst = enum_twoZlayer_string
+        case('square-well')
+          dst = enum_squareZwell_string
+        case('cubic_step')
+          dst = enum_cubic_step_string
+        case('cubic_step_topbot')
+          dst = enum_cubic_step_topbot_string
+        case('surface_pp')
+          dst = enum_surface_pp_string
+        case('plain')
+          dst = enum_plain_string
+        case('corona')
+          dst = enum_corona_string
+        case('temp')
+          dst = enum_temp_string
+        case('get_cool_general: cs20,cs2cool=')
+          dst = enum_get_cool_generalZ_cs20Zcs2coolZ_string
+        case('temp2')
+          dst = enum_temp2_string
+        case('rho_cs2')
+          dst = enum_rho_cs2_string
+        case('two-layer-mean')
+          dst = enum_twoZlayerZmean_string
+        case('get_cool_general')
+          dst = enum_get_cool_general_string
+        case('no such cooltype: ')
+          dst = enum_no_such_cooltypeZ__string
+        case('cooling_profile,z2,wcool,cs2cool=')
+          dst = enum_cooling_profileZz2ZwcoolZcs2coolZ_string
+        case('gaussian')
+          dst = enum_gaussian_string
+        case('step2')
+          dst = enum_step2_string
+        case('surfcool')
+          dst = enum_surfcool_string
+        case('volheat_surfcool')
+          dst = enum_volheat_surfcool_string
+        case('cs2-rho')
+          dst = enum_cs2Zrho_string
+        case('get_heat_cool_gravr')
+          dst = enum_get_heat_cool_gravr_string
+        case('no such heattype: ')
+          dst = enum_no_such_heattypeZ__string
+        case('heat.dat')
+          dst = enum_heatZdat_string
+        case('cs2')
+          dst = enum_cs2_string
+        case('temp-rho')
+          dst = enum_tempZrho_string
+        case('entropy')
+          dst = enum_entropy_string
+        case('pressure')
+          dst = enum_pressure_string
+        case('shell')
+          dst = enum_shell_string
+        case('calc_heat_cool: deltat_poleq=')
+          dst = enum_calc_heat_coolZ_deltat_poleqZ_string
+        case('ac_transformed_pencil_rcyl_mn=')
+          dst = enum_ac_transformed_pencil_rcyl_mnZ_string
+        case('ac_transformed_pencil_z_mn=')
+          dst = enum_ac_transformed_pencil_z_mnZ_string
+        case('shell2')
+          dst = enum_shell2_string
+        case('shell3')
+          dst = enum_shell3_string
+        case('shell_mean_yz')
+          dst = enum_shell_mean_yz_string
+        case('shell_mean_yz2')
+          dst = enum_shell_mean_yz2_string
+        case('shell_mean_downflow')
+          dst = enum_shell_mean_downflow_string
+        case('latheat')
+          dst = enum_latheat_string
+        case('shell+latheat')
+          dst = enum_shellZlatheat_string
+        case('shell+latss')
+          dst = enum_shellZlatss_string
+        case('top_layer')
+          dst = enum_top_layer_string
+        case('calc_heat_cool_gravx_cartesian')
+          dst = enum_calc_heat_cool_gravx_cartesian_string
+        case('eoscalc_pencil')
+          dst = enum_eoscalc_pencil_string
+        case('eoscalc_point')
+          dst = enum_eoscalc_point_string
+        case('thermodynamic variable combination')
+          dst = enum_thermodynamic_variable_combination_string
+        case('calc_tau_ss_exterior: tau=')
+          dst = enum_calc_tau_ss_exteriorZ_tauZ_string
+        case('initial-temperature')
+          dst = enum_initialZtemperature_string
+        case('dspecial_dt: solve dspecial_dt')
+          dst = enum_dspecial_dtZ_solve_dspecial_dt_string
+        case('advec_cs2  =')
+          dst = enum_advec_cs2__Z_string
+        case('set_dt1_max')
+          dst = enum_set_dt1_max_string
+        case('sum_mn')
+          dst = enum_sum_mn_string
+        case('not implemented for cylindrical')
+          dst = enum_not_implemented_for_cylindrical_string
+        case('rhs_cpu')
+          dst = enum_rhs_cpu_string
+        case('end of mn loop')
+          dst = enum_end_of_mn_loop_string
+        case('/tvart.dat')
+          dst = enum_ZtvartZdat_string
+        case('unknown')
+          dst = enum_unknown_string
+        case('append')
+          dst = enum_append_string
+        case('(4f14.7)')
+          dst = enum_Z4f14Z7Z_string
+        case('standard')
+          dst = enum_standard_string
+        case('standard2')
+          dst = enum_standard2_string
+        case('log-switch-on')
+          dst = enum_logZswitchZon_string
+        case('linear-sigma')
+          dst = enum_linearZsigma_string
+        case('eta_table')
+          dst = enum_eta_table_string
+        case('magnetic_after_boundary')
+          dst = enum_magnetic_after_boundary_string
+        case('eta_table not yet completed')
+          dst = enum_eta_table_not_yet_completed_string
+        case('mean-field')
+          dst = enum_meanZfield_string
+        case('lrho_chi')
+          dst = enum_lrho_chi_string
+        case('initialize_magnetic')
+          dst = enum_initialize_magnetic_string
+        case('e2m_all')
+          dst = enum_e2m_all_string
+        case('b2m_all')
+          dst = enum_b2m_all_string
+        case('mean-field-local')
+          dst = enum_meanZfieldZlocal_string
+        case('electric field must be computed')
+          dst = enum_electric_field_must_be_computed_string
+        case('calc_pencils_magnetic: advec_va2  =')
+          dst = enum_calc_pencils_magneticZ_advec_va2__Z_string
+        case('thomson')
+          dst = enum_thomson_string
+        case('fatal_error w/o force')
+          dst = enum_fatal_error_wZo_force_string
+        case('lambda-constant')
+          dst = enum_lambdaZconstant_string
+        case('daa_dt: advec_hall =')
+          dst = enum_daa_dtZ_advec_hall_Z_string
+        case('tau_jj must be finite and positive')
+          dst = enum_tau_jj_must_be_finite_and_positive_string
+        case('forcing: add continuous forcing')
+          dst = enum_forcingZ_add_continuous_forcing_string
+        case('fy=const')
+          dst = enum_fyZconst_string
+        case('fz=const')
+          dst = enum_fzZconst_string
+        case('abc')
+          dst = enum_abc_string
+        case('schur_nonhelical')
+          dst = enum_schur_nonhelical_string
+        case('schur_helical')
+          dst = enum_schur_helical_string
+        case('abctdep')
+          dst = enum_abctdep_string
+        case('aka')
+          dst = enum_aka_string
+        case('grav_z')
+          dst = enum_grav_z_string
+        case('uniform_vorticity')
+          dst = enum_uniform_vorticity_string
+        case('kolmogorovflow-x')
+          dst = enum_kolmogorovflowZx_string
+        case('kolmogorovflow-z')
+          dst = enum_kolmogorovflowZz_string
+        case('nocos')
+          dst = enum_nocos_string
+        case('straining')
+          dst = enum_straining_string
+        case('strainingexcact')
+          dst = enum_strainingexcact_string
+        case('forcing_cont')
+          dst = enum_forcing_cont_string
+        case('shock')
+          dst = enum_shock_string
+        case('hyper')
+          dst = enum_hyper_string
+        case('getnu')
+          dst = enum_getnu_string
+        case('some viscosity')
+          dst = enum_some_viscosity_string
+        case('robertsflowii')
+          dst = enum_robertsflowii_string
+        case('robertsflowmask')
+          dst = enum_robertsflowmask_string
+        case('robertsflow2d')
+          dst = enum_robertsflow2d_string
+        case('robertsflow_exact')
+          dst = enum_robertsflow_exact_string
+        case('robertsflow-zdep')
+          dst = enum_robertsflowZzdep_string
+        case('z-dependent roberts flow; eps_fcont=')
+          dst = enum_zZdependent_roberts_flowZ_eps_fcontZ_string
+        case('elevator-flow')
+          dst = enum_elevatorZflow_string
+        case('z-dependent elevator-flow; eps_fcont=')
+          dst = enum_zZdependent_elevatorZflowZ_eps_fcontZ_string
+        case('roberts-for-ssd')
+          dst = enum_robertsZforZssd_string
+        case('sinx')
+          dst = enum_sinx_string
+        case('(0,0,cosx)')
+          dst = enum_Z0Z0ZcosxZ_string
+        case('(0,0,cosxcosy)')
+          dst = enum_Z0Z0ZcosxcosyZ_string
+        case('b=(0,0,cosxcosy)')
+          dst = enum_bZZ0Z0ZcosxcosyZ_string
+        case('(0,x,0)')
+          dst = enum_Z0ZxZ0Z_string
+        case('(0,sinxsint,0)')
+          dst = enum_Z0ZsinxsintZ0Z_string
+        case('(0,sinx,0)')
+          dst = enum_Z0ZsinxZ0Z_string
+        case('(0,cosx*cosz,0)')
+          dst = enum_Z0ZcosxZcoszZ0Z_string
+        case('(0,sinx*exp(-z^2),0)')
+          dst = enum_Z0ZsinxZexpZZzZ2ZZ0Z_string
+        case('(0,aycont_z,0)')
+          dst = enum_Z0Zaycont_zZ0Z_string
+        case('(sinz,cosz,0)')
+          dst = enum_ZsinzZcoszZ0Z_string
+        case('tg')
+          dst = enum_tg_string
+        case('tg-random-nonhel')
+          dst = enum_tgZrandomZnonhel_string
+        case('tg-random-hel')
+          dst = enum_tgZrandomZhel_string
+        case('cosx*cosy*cosz')
+          dst = enum_cosxZcosyZcosz_string
+        case('gp')
+          dst = enum_gp_string
+        case('galloway-proctor-92')
+          dst = enum_gallowayZproctorZ92_string
+        case('gp_tc13')
+          dst = enum_gp_tc13_string
+        case('gp_tc13_yzx')
+          dst = enum_gp_tc13_yzx_string
+        case('mbi_emf')
+          dst = enum_mbi_emf_string
+        case('j0_k1x')
+          dst = enum_j0_k1x_string
+        case('fluxring_cylindrical')
+          dst = enum_fluxring_cylindrical_string
+        case('counter_centrifugal')
+          dst = enum_counter_centrifugal_string
+        case('vortex')
+          dst = enum_vortex_string
+        case('blob')
+          dst = enum_blob_string
+        case('zblob')
+          dst = enum_zblob_string
+        case('vert_field_blob')
+          dst = enum_vert_field_blob_string
+        case('ks')
+          dst = enum_ks_string
+        case('exp(-x2-y2)')
+          dst = enum_expZZx2Zy2Z_string
+        case('xz')
+          dst = enum_xz_string
+        case('1-(4/3)(1-r^2/4)*r^2')
+          dst = enum_1ZZ4Z3ZZ1ZrZ2Z4ZZrZ2_string
+        case('tidal')
+          dst = enum_tidal_string
+        case('from_file')
+          dst = enum_from_file_string
+        case('no such iforcing_cont: ')
+          dst = enum_no_such_iforcing_contZ__string
+        case('axel: should not be here (eta) ... ')
+          dst = enum_axelZ_should_not_be_here_ZetaZ_ZZZ__string
+        case('superconformal')
+          dst = enum_superconformal_string
+        case('axel2: should not be here (eta) ... ')
+          dst = enum_axel2Z_should_not_be_here_ZetaZ_ZZZ__string
+        case default
+          dst = enum_unknown_string_string
+        endselect
+
+    endsubroutine string_to_enum
+!***********************************************************************
+!$  subroutine signal_wait_single(lflag, lvalue)
+!
+!  Makes the current thread wait until lflag = lvalue.
+!
+! 14-Mar-24/TP: coded
+!
+!$  logical, volatile :: lflag,lvalue
+!
+!$    call cond_wait_single(DIAG_COND,lflag,lvalue)
+
+!$  endsubroutine signal_wait_single
+!***********************************************************************
+!$  subroutine signal_wait_multi(lflags, lvalues)
+!
+!  Makes the current thread wait until lflag = lvalue.
+!
+! 14-Mar-24/TP: coded
+!
+!$  logical, volatile, dimension(:) :: lflags,lvalues
+!
+!$    call cond_wait_multi(DIAG_COND,lflags,lvalues,size(lflags))
+
+!$  endsubroutine signal_wait_multi
+!***********************************************************************
+!$  subroutine signal_send(lflag, lvalue)
+!
+!  Sets lflag that some thread is waiting on to lvalue and unlocks thread.
+!
+! 14-Mar-24/TP: coded
+!
+!$  logical :: lflag, lvalue
+
+!$    lflag = lvalue
+!$    call cond_signal(DIAG_COND)
+
+!$  endsubroutine signal_send
+!***********************************************************************
+!$  subroutine signal_init
+!$    call cond_init
+!$  endsubroutine
+!***********************************************************************
+!$  integer function get_cpu()
+!$    get_cpu = get_cpu_c()
+!$  endfunction get_cpu
+!***********************************************************************
+!$  subroutine set_cpu(cpu_id)
+!$    integer :: cpu_id
+!$    call set_cpu_c(cpu_id)
+!$  endsubroutine set_cpu
+!***********************************************************************
+!$  logical function omp_single()
+
+!$    use OMP_lib
+
+!$    integer :: thread
+
+!$    thread = omp_get_thread_num()
+!$    omp_single = thread==0 .or. omp_get_level()==1.and.thread==1
+
+!$  end function omp_single
 !***********************************************************************
   endmodule General

@@ -20,7 +20,7 @@
 ! PENCILS PROVIDED DYDt_reac(nchemspec); DYDt_diff(nchemspec)
 ! PENCILS PROVIDED lambda; glambda(3)
 ! PENCILS PROVIDED Diff_penc_add(nchemspec); H0_RT(nchemspec); hhk_full(nchemspec)
-! PENCILS PROVIDED ghhk(3,nchemspec); S0_R(nchemspec), ff_cond, cond_heat
+! PENCILS PROVIDED ghhk(3,nchemspec); S0_R(nchemspec), ff_cond, latent_heat
 
 !
 !***************************************************************
@@ -142,7 +142,10 @@ module Chemistry
 !
 !   Diagnostics
 !
-  real, allocatable, dimension(:,:) :: net_react_m, net_react_p
+  real, allocatable, dimension(:,:), target :: net_react_m, net_react_p
+  !$omp threadprivate(net_react_m,net_react_p)
+! For concurrency
+  real, dimension(:,:), pointer :: p_net_react_m, p_net_react_p
   logical :: lchemistry_diag=.false.
 !
 ! input parameters
@@ -303,7 +306,6 @@ module Chemistry
         call put_shared_variable('lcheminp',lcheminp)
         call put_shared_variable('lThCond_simple',lThCond_simple)
         call put_shared_variable('tran_exist',tran_exist)
-        call put_shared_variable('tran_data',tran_data)
         call put_shared_variable('lt_const',lt_const)
         call put_shared_variable('ladvection',ladvection)
         call put_shared_variable('lfilter',lfilter)
@@ -476,7 +478,7 @@ module Chemistry
       logical :: exist, exist1, exist2
       character(len=15) :: file1='chemistry_m.dat', file2='chemistry_p.dat'
       integer :: ind_glob, ind_chem, stat
-      integer :: i
+      integer :: i, i_O2
       logical :: found_specie=.false.
       character(len=2) :: car2
 !
@@ -779,7 +781,7 @@ module Chemistry
       intent(inout) :: f
       intent(inout) :: p
       integer :: k,i,j2,j3
-      integer :: ii1=1, ii2=2, ii3=3, ii4=4, ii5=5, ii6=6, ii7=7
+      integer, parameter :: ii1=1, ii2=2, ii3=3, ii4=4, ii5=5, ii6=6, ii7=7
       real :: T_low, T_up, T_mid
       real, dimension(nx) :: T_loc, TT_2, TT_3, TT_4, D_th
 !
@@ -1431,11 +1433,11 @@ module Chemistry
 !  indices
 !
       integer :: j, k,i
-      integer :: i1=1, i2=2, i3=3, i4=4, i5=5, i6=6, i7=7, i8=8, i9=9, i10=10
-      integer :: i11=11, i12=12, i13=13, i14=14, i15=15, i16=16, i17=17, i18=18, i19=19
-      integer :: iz1=1, iz2=2, iz3=3, iz4=4, iz5=5, iz6=6, iz7=7, iz8=8, iz9=9, iz10=10
-      integer :: iz11=11, iz12=12, iz13=13, iz14=14, iz15=15, iz16=16, iz17=17
-      integer :: iz18=18, iz19=19
+      integer, parameter :: i1=1, i2=2, i3=3, i4=4, i5=5, i6=6, i7=7, i8=8, i9=9, i10=10
+      integer, parameter :: i11=11, i12=12, i13=13, i14=14, i15=15, i16=16, i17=17, i18=18, i19=19
+      integer, parameter :: iz1=1, iz2=2, iz3=3, iz4=4, iz5=5, iz6=6, iz7=7, iz8=8, iz9=9, iz10=10
+      integer, parameter :: iz11=11, iz12=12, iz13=13, iz14=14, iz15=15, iz16=16, iz17=17
+      integer, parameter :: iz18=18, iz19=19
 !
       intent(in) :: p,f
       intent(inout) :: df
@@ -1565,7 +1567,7 @@ module Chemistry
 !
 !  For the timestep calculation, need maximum diffusion
 !
-!      if (lfirst .and. ldt) then
+!      if (lupdate_courant_dt) then
 !print*,'Why never enters here??***********************************************************'
 !          diffus_chem=0.
 !          do j = 1,nx
@@ -1586,7 +1588,7 @@ module Chemistry
 !
 ! NB: it should be discussed
 !
-!      if (lfirst .and. ldt) then
+!      if (lupdate_courant_dt) then
 !        if (lreactions .and.(.not. llsode)) then
 !
 !  calculate maximum of *relative* reaction rate if decaying,
@@ -2145,28 +2147,7 @@ module Chemistry
 !
 ! CO2 CO N2 O2 H2O
 !
-    if (lmech_simple) then
-      ! O2
-      tran_data(4,1:7) = (/ 1.0000000000000000        ,107.40000000000001        ,3.4580000000000002        ,&
-                            0.0000000000000000E+000   ,1.6000000000000001        ,3.7999999999999998        ,&
-                            0.0000000000000000E+000 /)
-      ! N2
-      tran_data(3,1:7) = (/ 1.0000000000000000        ,97.530000000000001        ,3.6210000000000000        ,&
-                             0.0000000000000000E+000   ,1.7600000000000000        ,4.0000000000000000       ,&
-                             0.0000000000000000E+000 /)
-      ! CO
-      tran_data(2,1:7) = (/ 1.0000000000000000        ,98.099999999999994        ,3.6499999999999999        ,&
-                             0.0000000000000000E+000   ,1.9500000000000000        ,1.8000000000000000       ,&
-                             0.0000000000000000E+000 /)
-      ! CO2
-      tran_data(1,1:7) = (/ 1.0000000000000000        ,244.00000000000000        ,3.7629999999999999        ,&
-                             0.0000000000000000E+000   ,2.6499999999999999        ,2.1000000000000001       ,&
-                             0.0000000000000000E+000 /)
-      if (nchemspec==5) &
-        ! H2O
-        tran_data(5,1:7) = (/ 2.0000000000000000        ,572.39999999999998        ,2.6050000000000000        ,&
-                              1.8440000000000001        ,0.0000000000000000E+000   ,4.0000000000000000        ,&
-                              0.0000000000000000E+000 /)
+    if (lmech_simple) then    
 !
 !  Find number of reactions
 !
@@ -2176,46 +2157,6 @@ module Chemistry
       nreactions = mreactions
 !
     else
-!
-        tran_data(1,1:7) = (/ 1.0000000000000000        ,38.000000000000000        ,2.9199999999999999        ,&
-                              0.0000000000000000E+000  ,0.79000000000000004        ,280.00000000000000        ,&
-                              0.0000000000000000E+000 /)
-        tran_data(2,1:7) = (/ 1.0000000000000000        ,107.40000000000001        ,3.4580000000000002        ,&
-                              0.0000000000000000E+000   ,1.6000000000000001        ,3.7999999999999998        ,&
-                              0.0000000000000000E+000 /)
-        tran_data(3,1:7) = (/ 2.0000000000000000        ,572.39999999999998        ,2.6050000000000000        ,&
-                              1.8440000000000001        ,0.0000000000000000E+000   ,4.0000000000000000        ,&
-                              0.0000000000000000E+000 /)
-        tran_data(4,1:7) = (/ 0.0000000000000000E+000   ,145.00000000000000        ,2.0499999999999998        ,&
-                              0.0000000000000000E+000   ,0.0000000000000000E+000   ,0.0000000000000000E+000   ,&
-                              0.0000000000000000E+000 /)
-        tran_data(5,1:7) = (/ 0.0000000000000000E+000   ,80.000000000000000        ,2.7500000000000000        ,&
-                              0.0000000000000000E+000   ,0.0000000000000000E+000   ,0.0000000000000000E+000   ,&
-                              0.0000000000000000E+000 /)
-        tran_data(6,1:7) = (/ 1.0000000000000000        ,80.000000000000000        ,2.7500000000000000        ,&
-                              0.0000000000000000E+000   ,0.0000000000000000E+000   ,0.0000000000000000E+000   ,&
-                              0.0000000000000000E+000 /)
-        tran_data(7,1:7) = (/ 2.0000000000000000        ,107.40000000000001        ,3.4580000000000002        ,&
-                              0.0000000000000000E+000   ,0.0000000000000000E+000   ,1.0000000000000000        ,&
-                              0.0000000000000000E+000 /)
-        tran_data(8,1:7) = (/ 2.0000000000000000        ,107.40000000000001        ,3.4580000000000002        ,&
-                              0.0000000000000000E+000   ,0.0000000000000000E+000   ,3.7999999999999998        ,&
-                              0.0000000000000000E+000 /)
-        tran_data(9,1:7) = (/ 0.0000000000000000E+000   ,136.50000000000000        ,3.3300000000000001        ,&
-                              0.0000000000000000E+000   ,0.0000000000000000E+000   ,0.0000000000000000E+000   ,&
-                              0.0000000000000000E+000 /)
-        tran_data(10,1:7) = (/ 1.0000000000000000        ,97.530000000000001        ,3.6210000000000000        ,&
-                               0.0000000000000000E+000   ,1.7600000000000000        ,4.0000000000000000        ,&
-                               0.0000000000000000E+000 /)
-        tran_data(11,1:7) = (/ 0.0000000000000000E+000   ,10.199999999999999        ,2.5760000000000001        ,&
-                               0.0000000000000000E+000   ,0.0000000000000000E+000   ,0.0000000000000000E+000   ,&
-                               0.0000000000000000E+000 /)
-        tran_data(12,1:7) = (/ 1.0000000000000000        ,98.099999999999994        ,3.6499999999999999        ,&
-                               0.0000000000000000E+000   ,1.9500000000000000        ,1.8000000000000000        ,&
-                               0.0000000000000000E+000 /)
-        tran_data(13,1:7) = (/ 1.0000000000000000        ,244.00000000000000        ,3.7629999999999999        ,&
-                               0.0000000000000000E+000   ,2.6499999999999999        ,2.1000000000000001        ,&
-                               0.0000000000000000E+000 /)
 !
 !  Find number of ractions
 !
@@ -4088,13 +4029,13 @@ module Chemistry
       real, dimension(nx,nreactions), intent(out) :: vreact_p, vreact_m
 !
       type (pencil_case) :: p
-      real, dimension(nx) :: dSR=0., dHRT=0., Kp, Kc
+      real, dimension(nx) :: dSR, dHRT, Kp, Kc
       real, dimension(nx) :: prod1, prod2
-      real, dimension(nx) :: kf=0., kr=0.
+      real, dimension(nx) :: kf, kr
       real, dimension(nx) :: rho_cgs, p_atm
       real, dimension(nx) :: mix_conc
       integer :: k, reac, i
-      real :: sum_tmp=0., ddd
+      real :: sum_tmp, ddd
       real :: Rcal, Rcal1, lnRgas, l10, lnp_atm
       logical, save :: lwrite_first=.true.
       character(len=fnlen) :: input_file="./data/react.out"
@@ -4307,8 +4248,8 @@ module Chemistry
       real, dimension(nx,nchemspec) :: molm
       type (pencil_case) :: p
       integer :: k,j,ii
-      integer :: i1=1, i2=2, i3=3, i4=4, i5=5, i6=6, i7=7, i8=8, i9=9, i10=10
-      integer :: i11=11, i12=12, i13=13, i14=14, i15=15, i16=16, i17=17, i18=18, i19=19
+      integer, parameter :: i1=1, i2=2, i3=3, i4=4, i5=5, i6=6, i7=7, i8=8, i9=9, i10=10
+      integer, parameter :: i11=11, i12=12, i13=13, i14=14, i15=15, i16=16, i17=17, i18=18, i19=19
 !
       p%DYDt_reac = 0.
       rho1 = 1./p%rho
@@ -4378,10 +4319,10 @@ module Chemistry
 !
       real, dimension(mx,my,mz,mfarray) :: f
       type (pencil_case) :: p
-      real, dimension(nx,3) :: gchemspec, sum_diff=0., dk_D
+      real, dimension(nx,3) :: gchemspec, sum_diff, dk_D
       real, dimension(nx,3,nchemspec) :: gDiff_full_add
       real, dimension(nx) :: del2chemspec, diff_op1, diff_op2
-      real, dimension(nx) :: sum_gdiff=0., gY_sumdiff
+      real, dimension(nx) :: sum_gdiff, gY_sumdiff
       integer :: k,i
 !
       intent(in) :: f
@@ -4600,7 +4541,7 @@ module Chemistry
           cv_full = cp_full - f(l1:l2,m1:m2,index,iRR)
           slice = cp_full/cv_full * f(l1:l2,m1:m2,index,iRR)*TT_full
         else
-           call fatal_error('get_cs2_slice','no such dir')
+          call fatal_error('get_cs2_slice','no such dir')
         endif
 !
       endif
@@ -4644,9 +4585,8 @@ module Chemistry
            allocate (cv_full(ny,nz))
            cp_full = f(index,m1:m2,n1:n2,icp)
            do k=1,nchemspec
-             if (species_constants(k,imass)>0.) then
+             if (species_constants(k,imass)>0.) &
                cv_full = cv_full + cv_k(k)*f(index,m1:m2,n1:n2,ichemspec(k))
-             endif
            enddo
           slice = cp_full/cv_full
         elseif (dir == 2) then
@@ -4654,9 +4594,8 @@ module Chemistry
            allocate (cv_full(nx,nz))
            cp_full = f(l1:l2,index,n1:n2,icp)
            do k=1,nchemspec
-             if (species_constants(k,imass)>0.) then
+             if (species_constants(k,imass)>0.) &
                cv_full = cv_full + cv_k(k)*f(l1:l2,index,n1:n2,ichemspec(k))
-             endif
            enddo
           slice = cp_full/cv_full
         elseif (dir == 3) then
@@ -4664,9 +4603,8 @@ module Chemistry
            allocate (cv_full(nx,ny))
            cp_full = f(l1:l2,m1:m2,index,icp)
            do k=1,nchemspec
-             if (species_constants(k,imass)>0.) then
+             if (species_constants(k,imass)>0.) &
                cv_full = cv_full + cv_k(k)*f(l1:l2,m1:m2,index,ichemspec(k))
-             endif
            enddo
           slice = cp_full/cv_full
         else
@@ -4897,9 +4835,7 @@ module Chemistry
         endif
       endif
 
-      if (nxgrid>1) then
-        f(:,:,:,iux)=f(:,:,:,iux)+velx
-      endif
+      if (nxgrid>1) f(:,:,:,iux)=f(:,:,:,iux)+velx
 
       if (lroot) print*, 'Air temperature, K', TT
       if (lroot) print*, 'Air pressure, dyn', PP
@@ -5093,7 +5029,7 @@ module Chemistry
       call keep_compiler_quiet(ad)
       call keep_compiler_quiet(dustbin_width)
       call keep_compiler_quiet(mfluxcond)
-!  
+!
     end subroutine cond_spec_cond
 !***********************************************************************
     subroutine cond_spec_nucl(f,df,p,kk_vec,ad)
@@ -5109,7 +5045,7 @@ module Chemistry
       call keep_compiler_quiet(p)
       call keep_compiler_quiet(ad)
       call keep_compiler_quiet(kk_vec)
-!  
+!
     end subroutine cond_spec_nucl
 !***********************************************************************
     subroutine condensing_species_rate(p,mfluxcond)
@@ -5119,7 +5055,7 @@ module Chemistry
 !
       call keep_compiler_quiet(p)
       call keep_compiler_quiet(mfluxcond)
-!      
+!
     end subroutine condensing_species_rate
 !***********************************************************************
     subroutine cond_spec_cond_lagr(f,df,p,rp,ix0,ix,np_swarm,dapdt)
@@ -5149,6 +5085,24 @@ module Chemistry
       call keep_compiler_quiet(p)
 !
     end subroutine cond_spec_nucl_lagr
+!***********************************************************************
+    subroutine chemistry_init_reduc_pointers
+!
+! 7-feb-24/TP:  allocates memory needed for reductions
+!
+      if (allocated(net_react_m)) p_net_react_m => net_react_m
+      if (allocated(net_react_p)) p_net_react_p => net_react_p
+!
+    endsubroutine chemistry_init_reduc_pointers
+!***********************************************************************
+    subroutine chemistry_diags_reductions
+!
+! 7-feb-24/TP:  diag_reductions for chemistry
+!
+      if (allocated(net_react_m)) p_net_react_m = p_net_react_m + net_react_m
+      if (allocated(net_react_p)) p_net_react_p = p_net_react_p + net_react_p
+!
+    endsubroutine chemistry_diags_reductions
 !***********************************************************************
     include 'chemistry_common.inc'
 !***********************************************************************

@@ -10,6 +10,8 @@
 ! MPVAR CONTRIBUTION 1
 ! CPARAM logical, parameter :: lparticles_radius=.true.
 !
+! PENCILS PROVIDED 
+!
 !***************************************************************
 module Particles_radius
 !
@@ -518,13 +520,15 @@ module Particles_radius
         lpenc_requested(i_cc) = .true.
       endif
       if (lcondensation_par) then
-        lpenc_requested(i_csvap2) = .true.
+        if (.not. lascalar .and. .not. lcondensation_simplified .and. .not. lcondensing_species) then
+          lpenc_requested(i_csvap2) = .true.
+        endif
         lpenc_requested(i_TT1) = .true.
         lpenc_requested(i_ppvap) = .true.
         lpenc_requested(i_rho) = .true.
         lpenc_requested(i_rho1) = .true.
         lpenc_requested(i_cc) = .true.
-        lpenc_requested(i_cc1) = .true.
+        if (.not. lpscalar_nolog) lpenc_requested(i_cc1) = .true.
         lpenc_requested(i_np) = .true.
         lpenc_requested(i_rhop) = .true.
         if (ltemperature) then
@@ -677,7 +681,7 @@ module Particles_radius
 !
 !  Time-step contribution of sweep-up.
 !
-              if (lfirst.and.ldt) dt1_sweepup(ix) = dt1_sweepup(ix) + np_swarm*pi*fp(k,iap)**2*deltavp
+              if (lupdate_courant_dt) dt1_sweepup(ix) = dt1_sweepup(ix) + np_swarm*pi*fp(k,iap)**2*deltavp
 !
             endif
 !
@@ -689,7 +693,7 @@ module Particles_radius
 !
 !  Time-step contribution of sweep-up.
 !
-        if (lfirst .and. ldt) then
+        if (lupdate_courant_dt) then
           dt1_sweepup = dt1_sweepup/cdtps
           dt1_max = max(dt1_max,dt1_sweepup)
         endif
@@ -733,7 +737,7 @@ module Particles_radius
       type (pencil_case) :: p
       integer, dimension(mpar_loc,3) :: ineargrid
 !
-      real, dimension(nx) :: ap_equi, vth, dt1_condensation, rhovap
+      real, dimension(nx) :: ap_equi, vth, dt1_condensation=0., rhovap
       real, dimension(nx) :: total_surface_area, ppsat
       real, dimension(nx) :: rhocond_tot, rhosat, np_total, mfluxcond
       real, dimension(nx) :: tau_phase1, tau_evaporation1, tau_evaporation
@@ -745,7 +749,7 @@ module Particles_radius
       !
       p%ff_cond=0.
       p%part_heatcap=0.
-      p%cond_heat=0.
+      p%latent_heat=0.
 !
 !  Change in particle radius due to condensation and evaporation.
 !
@@ -756,10 +760,12 @@ module Particles_radius
 !DMDM
           rhovap = p%cc(:,1)*p%rho
           ppsat = 6.035e11*exp(-5938*p%TT1)  ! Valid for water
-          vth = sqrt(p%csvap2)
-          rhosat = gamma*ppsat/p%csvap2
+          if (.not. lascalar .and. .not. lcondensation_simplified .and. .not. lcondensing_species) then
+             vth = sqrt(p%csvap2)
+            rhosat = gamma*ppsat/p%csvap2
+          endif
           rhocond_tot = p%rhop+rhovap
-          if (lfirst .and. ldt) then
+          if (lupdate_courant_dt) then
             np_total = 0.0
             total_surface_area = 0.0
             dt1_condensation = 0.0
@@ -811,7 +817,7 @@ module Particles_radius
 !  Do not allow particles to become smaller than a minimum radius.
 !
               dapdt = -tau_damp_evap1*(fp(k,iap)-apmin)
-              if (lfirst .and. ldt) then
+              if (lupdate_courant_dt) then
                 dt1_condensation(ix) = max(dt1_condensation(ix),tau_damp_evap1)
               endif
             else
@@ -861,16 +867,15 @@ module Particles_radius
 !  the limit of small particles; therefore we need to damp the evaporation to
 !  avoid small time-steps.
 !
-              if (dapdt < 0.0) then
+              if (dapdt < 0.0 .and. apmin > 0.0) then
                 dapdt = dapdt*min(1.0,(fp(k,iap)/apmin-1.0)**2)
-                if (lfirst .and. ldt) then
+                if (lupdate_courant_dt) then
                   dt1_condensation(ix) = max(dt1_condensation(ix), abs(dapdt/(fp(k,iap)-apmin)))
                 endif
               endif
             endif
 !
             dfp(k,iap) = dfp(k,iap)+dapdt
-if (ip<10 .and. k==1) print*,'AXEL: t,fp(k,iap)=',t,fp(k,iap)
 !
 !  Vapor monomers are added to the gas or removed from the gas.
 !
@@ -921,23 +926,21 @@ if (ip<10 .and. k==1) print*,'AXEL: t,fp(k,iap)=',t,fp(k,iap)
             if (ltemperature .and. llatent_heat) &
               df(ix0,m,n,ilnTT) = df(ix0,m,n,ilnTT) - latent_heat_SI*p%rho1(ix)*p%TT1(ix)*p%cv1(ix)*drhocdt
 !
-!            if (lfirst .and. ldt) then
-            if (lfirst .and. ldt .and. .not. lascalar .and. .not. lcondensation_simplified) then
+!            if (lupdate_courant_dt) then
+            if (lupdate_courant_dt .and. .not. lascalar .and. .not. lcondensation_simplified) then
               total_surface_area(ix) = total_surface_area(ix)+ 4*pi*fp(k,iap)**2*np_swarm*alpha_cond_par
               np_total(ix) = np_total(ix)+np_swarm
-            elseif (lfirst .and. ldt .and. lascalar .and. ldt_condensation) then
+            elseif (lupdate_courant_dt .and. lascalar .and. ldt_condensation) then
               tau_phase1(ix) = tau_phase1(ix)+4.0*pi*modified_vapor_diffusivity*fp(k,iap)*fp(k, inpswarm)
               if (ldt_evaporation) tau_evaporation1(ix) = -(2*G_condensation*f(ix,m,n,issat))/fp(k,iap)**2
-            elseif (lfirst .and. ldt .and. lcondensation_simplified .and. ldt_condensation) then
+            elseif (lupdate_courant_dt .and. lcondensation_simplified .and. ldt_condensation) then
               tau_phase1(ix) = tau_phase1(ix)+4.0*pi*modified_vapor_diffusivity*fp(k,iap)*fp(k, inpswarm)
             endif
           enddo
 !
 !  Time-step contribution of condensation.
 !
-!          if (lfirst .and. ldt) then
-          if (lfirst .and. ldt .and. .not. lascalar .and. .not. lcondensation_simplified) then
-
+          if (lupdate_courant_dt .and. .not. lascalar .and. .not. lcondensation_simplified .and. .not. lcondensing_species) then
             ap_equi = ((p%rhop+(rhovap-rhosat))/(4.0/3.0*pi*rhopmat*np_swarm*p%np))**(1.0/3.0)
             do ix = 1,nx
               if (rhocond_tot(ix) > rhosat(ix)) then
@@ -945,12 +948,12 @@ if (ip<10 .and. k==1) print*,'AXEL: t,fp(k,iap)=',t,fp(k,iap)
                     pi*vth(ix)*np_total(ix)*ap_equi(ix)**2*alpha_cond)
               endif
             enddo
-          elseif (lfirst .and. ldt .and. lascalar .and. ldt_condensation) then
+          elseif (lupdate_courant_dt .and. lascalar .and. ldt_condensation) then
             do ix = 1,nx
               dt1_condensation(ix) = tau_phase1(ix)
               if (ldt_evaporation) dt1_condensation(ix) = max(tau_phase1(ix), tau_evaporation1(ix))
             enddo
-          elseif (lfirst .and. ldt .and. lcondensation_simplified .and. ldt_condensation) then  
+          elseif (lupdate_courant_dt .and. lcondensation_simplified .and. ldt_condensation) then  
             do ix = 1,nx
               if (ldt_evaporation) then
                 tau_evaporation1(ix) = -(2*GS_condensation)/ap0(1)**2
@@ -959,7 +962,7 @@ if (ip<10 .and. k==1) print*,'AXEL: t,fp(k,iap)=',t,fp(k,iap)
                 dt1_condensation(ix) = tau_phase1(ix)
               endif
             enddo
-          elseif (lfirst .and. ldt .and. ldt_condensation_off) then
+          elseif (lupdate_courant_dt .and. ldt_condensation_off) then
               dt1_condensation = 0.
           endif
         endif
@@ -971,7 +974,7 @@ if (ip<10 .and. k==1) print*,'AXEL: t,fp(k,iap)=',t,fp(k,iap)
 !
 !  Time-step contribution of condensation.
 !
-        if (lfirst .and. ldt) then
+        if (lupdate_courant_dt) then
           dt1_condensation = dt1_condensation/cdtpc
           dt1_max = max(dt1_max,dt1_condensation)
         endif
@@ -998,14 +1001,16 @@ if (ip<10 .and. k==1) print*,'AXEL: t,fp(k,iap)=',t,fp(k,iap)
 !  Diagnostic output.
 !
       if (ldiagnos) then
-        if (idiag_apm /= 0) call sum_par_name(fp(1:npar_loc,iap),idiag_apm)
-        if (idiag_ap2m /= 0) call sum_par_name(fp(1:npar_loc,iap)**2,idiag_ap2m)
-        if (idiag_ap3m /= 0) call sum_par_name(fp(1:npar_loc,iap)**3,idiag_ap3m)
-        if (idiag_apmin /= 0) call max_par_name(-fp(1:npar_loc,iap),idiag_apmin,lneg=.true.)
-        if (idiag_apmax /= 0) call max_par_name(fp(1:npar_loc,iap),idiag_apmax)
-        if (idiag_npswarmm /= 0) call sum_par_name(rhop_swarm/ &
-            (four_pi_rhopmat_over_three*fp(1:npar_loc,iap)**3),idiag_npswarmm)
-        if (idiag_ieffp /= 0) call sum_par_name(fp(1:npar_loc,ieffp),idiag_ieffp)
+        call sum_par_name(fp(1:npar_loc,iap),idiag_apm,len=npar_loc)
+        call sum_par_name(fp(1:npar_loc,iap)**2,idiag_ap2m,len=npar_loc)
+        call sum_par_name(fp(1:npar_loc,iap)**3,idiag_ap3m,len=npar_loc)
+        call max_par_name(-fp(1:npar_loc,iap),idiag_apmin,lneg=.true.,len=npar_loc)
+        call max_par_name(fp(1:npar_loc,iap),idiag_apmax,len=npar_loc)
+        if (idiag_npswarmm/=0.and.npar_loc>0) call sum_par_name(rhop_swarm/ &
+             (four_pi_rhopmat_over_three*fp(1:npar_loc,iap)**3),idiag_npswarmm,len=npar_loc)
+        if (lparticles_chemistry) then
+          call sum_par_name(fp(1:npar_loc,ieffp),idiag_ieffp,len=npar_loc)
+        endif
       endif
 !
       call keep_compiler_quiet(f,df)

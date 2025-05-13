@@ -57,23 +57,23 @@ module Particles_main
 !
       integer :: ipvar
 !
-      call register_particles              
-      call register_particles_lyapunov    
-      call register_particles_radius       
-      call register_particles_grad         
-      call register_particles_spin         
-      call register_particles_number       
-      call register_particles_density      
-      call register_particles_stirring     
-      call register_particles_selfgrav     
-      call register_particles_sink         
-      call register_particles_TT           
-      call register_particles_mass         
-      call register_particles_drag         
-      call register_particles_chem         
-      call register_particles_ads          
-      call register_particles_surfspec     
-      call register_pars_diagnos_state     
+      call register_particles
+      call register_particles_lyapunov
+      call register_particles_radius
+      call register_particles_grad
+      call register_particles_spin
+      call register_particles_number
+      call register_particles_density
+      call register_particles_stirring
+      call register_particles_selfgrav
+      call register_particles_sink
+      call register_particles_TT
+      call register_particles_mass
+      call register_particles_drag
+      call register_particles_chem
+      call register_particles_ads
+      call register_particles_surfspec
+      call register_pars_diagnos_state
       call register_particles_special(npvar)
 !
 !  Print summary of variable names.
@@ -484,13 +484,14 @@ module Particles_main
 !
     endsubroutine particles_write_rmv
 !***********************************************************************
-    subroutine particles_timestep_first(f)
+    subroutine particles_timestep_first(f,df)
 !
 !  Setup dfp in the beginning of each itsub.
 !
 !  07-jan-05/anders: coded
 !
       real, dimension (mx,my,mz,mfarray) :: f
+      real, dimension(mx,my,mz,mvar), intent(inout) :: df
 !
       call keep_compiler_quiet(f)
 !
@@ -503,7 +504,7 @@ module Particles_main
 !  Insert new and remove old particles continuously during the run
 !
       if (lfirst) then
-        call particles_insert_continuously(f)
+        call particles_insert_continuously(f,df,ineargrid,fp)
         call particles_remove_continuously(f)
       endif
 !
@@ -962,9 +963,9 @@ module Particles_main
 !
 !  The subroutine does not need to be called if either pointmasses
 !  or particle tracers is used. Pointmasses correct for curvilinear
-!  coordinates already, and particle tracers do not have particle 
+!  coordinates already, and particle tracers do not have particle
 !  velocities as they follow the gas. The npvar>3 means that only
-!  ip[xyz] exist. A logical lparticles_tracers is missing. 
+!  ip[xyz] exist. A logical lparticles_tracers is missing.
 !
       if ((.not.lpointmasses).and.(npvar>3)) then
         do k=1,npar_loc
@@ -1252,7 +1253,7 @@ module Particles_main
 
     endsubroutine particles_stochastic
 !***********************************************************************
-    subroutine particles_insert_continuously(f)
+    subroutine particles_insert_continuously(f,df,ineargrid,fp)
 !
 !  Insert particles continuously, i.e. add particles in
 !  the beginning of a time step.
@@ -1260,9 +1261,12 @@ module Particles_main
 !  sep-09/kragset: coded
 !
       real, dimension (mx,my,mz,mfarray) :: f
+      real, dimension(mx,my,mz,mvar), intent(inout) :: df
+      real, dimension(mpar_loc,mparray) :: fp
+      integer, dimension(mpar_loc,3) :: ineargrid
 !
       if (linsert_particles_continuously) call insert_particles(f,fp,ineargrid)
-      if (lpartnucleation) call insert_nucleii(f,fp,ineargrid)
+      if (lpartnucleation) call insert_nucleii(f,fp,ineargrid,df)
 !
     endsubroutine particles_insert_continuously
 !***********************************************************************
@@ -1278,7 +1282,23 @@ module Particles_main
       real :: rp, epsd2g_tmp
       integer :: k, ix0, iy0, iz0
 !
-      if (remove_particle_at_time > 0) then        
+! For the size-case, we want to remove undersized particles at every time step
+!
+      select case (remove_particle_criteria)
+      case ('size')
+        k=1
+        do while (k<=npar_loc)
+          if ( fp(k,iap) < remove_particle_criteria_size ) then
+            call remove_particle(fp,ipar,k,dfp,ineargrid)
+          else
+            k=k+1
+          endif
+        enddo
+      end select
+!
+! Now, do the removal at specif time
+!
+      if (remove_particle_at_time > 0) then
         !
         ! Should this be moved to particles_dust.f90 and _blocks.f90 respectivly? (signed who?)
         !
@@ -1324,7 +1344,7 @@ module Particles_main
                 endif
               enddo
               remove_particle_at_time = -1.
-                
+
             case ('xycylinder')
               k=1
               do while (k<=npar_loc)
@@ -1336,18 +1356,6 @@ module Particles_main
                 endif
               enddo
               remove_particle_at_time = -1.
-
-            case ('size')
-              k=1
-              do while (k<=npar_loc)
-                if ( fp(k,iap) < remove_particle_criteria_size ) then
-                  call remove_particle(fp,ipar,k,dfp,ineargrid)
-!                  print*,"Removed particle:",k,fp(k,iap)
-                else
-                  k=k+1
-                endif
-              enddo
-              remove_particle_at_time = t+dt
             endselect
           else
             remove_particle_at_time = -1.
@@ -1383,7 +1391,7 @@ module Particles_main
       call append_npvar(label,ilabel)
 !
     endsubroutine append_particle_index
-!*********************************************************************** 
+!***********************************************************************
     subroutine fetch_fp_array(fp_aux,dfp_aux,ixw,iyw,izw,ivxw,ivyw,ivzw)
 !
       real,    dimension(mpar_loc,mparray), intent(out) :: fp_aux

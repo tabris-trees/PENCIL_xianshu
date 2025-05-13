@@ -38,7 +38,7 @@ module Initcond
   public :: triquad, isotdisk
   public :: diffrot, olddiffrot
   public :: const_omega
-  public :: powern, power_randomphase, power_randomphase_hel
+  public :: powern, power_randomphase, power_randomphase_hel, bunch_davies
   public :: planet, planet_hc
   public :: random_isotropic_KS, random_isotropic_shell
   public :: htanh, vtube, vtube_peri, htube, htube2, htube_x, hat, hat3d
@@ -48,7 +48,7 @@ module Initcond
   public :: wave_uu, wave, parabola, linprof
   public :: sinxsinz, cosx_cosy_cosz, cosx_coscosy_cosz
   public :: x_siny_cosz, x1_siny_cosz, x32_siny_cosz, x1_cosy_cosz, lnx_cosy_cosz
-  public :: sinx_siny_sinz, cosx_siny_cosz, sinx_siny_cosz
+  public :: sinx_siny_sinz, sinx_cosy_cosz, cosx_siny_cosz, sinx_siny_cosz
   public :: sin2x_sin2y_cosz, cos2x_cos2y_cos2z, x3_cosy_cosz, x3_siny_cosz
   public :: cosx_cosz, cosy_cosz, cosy_sinz
   public :: cosxz_cosz, cosyz_sinz
@@ -58,7 +58,7 @@ module Initcond
   public :: vortex_2d
   public :: vfield2
   public :: hawley_etal99a
-  public :: robertsflow
+  public :: robertsflow, rotated_robertsflow
   public :: const_lou
   public :: corona_init,mdi_init,mag_init,mag_Az_init,file_init,temp_hydrostatic
   public :: innerbox
@@ -128,7 +128,7 @@ module Initcond
 !
       integer :: i,j
       real, dimension (mx,my,mz,mfarray) :: f
-      real,optional :: kx,ky,kz,KKx,KKy,KKz
+      real, optional :: kx,ky,kz,KKx,KKy,KKz
       real :: ampl,kx1=pi/2.,ky1=0.,kz1=pi/2.,KKx1=0.,KKy1=0.,KKz1=0.
 !
 !  wavenumber k, helicity H=ampl (can be either sign)
@@ -453,6 +453,36 @@ module Initcond
       endif
 !
     endsubroutine cosx_siny_cosz
+!***********************************************************************
+    subroutine sinx_cosy_cosz(ampl,f,i,kx,ky,kz)
+!
+!  sinusoidal wave, adapted from cosx_siny_cosz
+!
+!  26-mar-25/TP: coded
+!
+      integer :: i
+      real, dimension (mx,my,mz,mfarray) :: f
+      real,optional :: kx,ky,kz
+      real :: ampl,kx1=pi/2.,ky1=0.,kz1=pi/2.
+!
+!  wavenumber k, helicity H=ampl (can be either sign)
+!
+!  sinx(kx*x)*sin(kz*z)
+!
+      if (present(kx)) kx1=kx
+      if (present(ky)) ky1=ky
+      if (present(kz)) kz1=kz
+      if (ampl==0) then
+        if (lroot) print*,'sinx_cosy_cosz: ampl=0'
+      else
+        if (lroot) write(*,wave_fmt1) 'sinx_cosy_cosz: ampl,kx,ky,kz=', &
+                                      ampl,kx1,ky1,kz1
+        f(:,:,:,i)=f(:,:,:,i)+ampl*(spread(spread(sin(kx1*x),2,my),3,mz)&
+                                   *spread(spread(cos(ky1*y),1,mx),3,mz)&
+                                   *spread(spread(cos(kz1*z),1,mx),2,my))
+      endif
+!
+    endsubroutine sinx_cosy_cosz
 !***********************************************************************
     subroutine sin2x_sin2y_cosz(ampl,f,i,kx,ky,kz)
 !
@@ -2314,6 +2344,53 @@ module Initcond
 !
     endsubroutine robertsflow
 !***********************************************************************
+    subroutine rotated_robertsflow(ampl,f,i,relhel,kx,flow)
+!
+!  By 45 degrees rotated Roberts Flow (as initial condition)
+!
+!   6-jan-25/axel: coded
+!
+      integer :: i,j
+      real, dimension (mx,my,mz,mfarray) :: f
+      real :: ampl,k=1.,kf,fac1,fac2,relhel
+      real, optional :: kx
+      character (len=labellen) :: flowtype='I'
+      character (len=labellen), optional :: flow
+!
+!  Possibility of changing the wavenumber
+!
+      if (present(kx)) then
+        k=kx
+      endif
+!
+!  Possibility of changing the flow
+!
+      if (present(flow)) then
+        flowtype=flow
+      endif
+!
+!  prepare coefficients
+!
+      kf=k*sqrt(2.)
+      fac1=sqrt(2.)*ampl*k/kf
+      fac2=sqrt(2.)*ampl*relhel
+!
+      j=i+0; f(:,:,:,j)=f(:,:,:,j)+fac1*spread(spread(sin(k*y),1,mx),3,mz)
+!
+      j=i+1; f(:,:,:,j)=f(:,:,:,j)+fac1*spread(spread(sin(k*x),2,my),3,mz)
+!
+      if (flowtype=='I') then
+        j=i+2; f(:,:,:,j)=f(:,:,:,j)+fac1*(spread(spread(cos(k*x),2,my),3,mz)&
+                                          -spread(spread(cos(k*y),1,mx),3,mz))
+      elseif (flowtype=='II') then
+        j=i+2; f(:,:,:,j)=f(:,:,:,j)+fac1*(spread(spread(cos(k*x),2,my),3,mz)&
+                                          +spread(spread(cos(k*y),1,mx),3,mz))
+      else
+        call fatal_error('robertsflow','no such flowtype')
+      endif
+!
+    endsubroutine rotated_robertsflow
+!***********************************************************************
     subroutine exponential(ampl,f,j,KKz)
 !
 !  horizontal pattern with exponential decay (as initial condition)
@@ -2461,15 +2538,16 @@ module Initcond
 !
       integer :: i
       real, dimension (mx,my,mz,mfarray) :: f
-      real, optional :: kx,ky,kz
-      real :: ampl,k=1.,fac
+      real, optional :: kx, ky, kz
+      real :: ampl, k=1., fac
+      real :: kx1, ky1, kz1
 !
 !  wavenumber k
 !
 !  set x-dependent cos wave
 !
       if (present(kx)) then
-        k=kx; if (k==0) print*,'coswave: k must not be zero!'; fac=ampl
+        k=kx; if (k==0) print*,'coswave: k must not be zero!'
         if (ampl==0) then
           if (lroot) print*,'coswave: ampl=0; kx=',k
         else
@@ -2660,46 +2738,76 @@ module Initcond
 !
     endsubroutine sinwave
 !***********************************************************************
-    subroutine sinwave_phase(f,i,ampl,kx,ky,kz,phase)
+    subroutine sinwave_phase(f,i,ampl,kx,ky,kz,phase,lnorm_kk)
 !
 !  Sine wave (as initial condition)
 !
 !  23-jan-06/anders: adapted from sinwave.
 !
       real, dimension (mx,my,mz,mfarray) :: f
-      real :: ampl, kx, ky, kz, phase
+      real :: ampl, kx, ky, kz, phase, fact, k2
       integer :: i
+      logical, optional :: lnorm_kk
+!
+!  possibility to normalize by 1/k if the initial amplitude
+!  is meant to be an amplitude for the B-field.
+!
+      if (present(lnorm_kk)) then
+        k2=kx**2+ky**2+kz**2
+        if (lnorm_kk .and. k2/=0.) then
+          fact=ampl/sqrt(k2)
+        else
+          fact=ampl
+        endif
+      else
+        fact=ampl
+      endif
 !
 !  Set sin wave
 !
-      if (lroot) print*, 'sinwave_phase: i, ampl, kx, ky, kz, phase=', &
-          i, ampl, kx, ky, kz, phase
+      if (lroot) print*, 'sinwave_phase: i, fact, kx, ky, kz, phase=', &
+          i, fact, kx, ky, kz, phase
 !
       do m=m1,m2; do n=n1,n2
         f(l1:l2,m,n,i) = f(l1:l2,m,n,i) + &
-            ampl*sin(kx*x(l1:l2)+ky*y(m)+kz*z(n)+phase)
+            fact*sin(kx*x(l1:l2)+ky*y(m)+kz*z(n)+phase)
       enddo; enddo
 !
     endsubroutine sinwave_phase
 !***********************************************************************
-    subroutine coswave_phase(f,i,ampl,kx,ky,kz,phase)
+    subroutine coswave_phase(f,i,ampl,kx,ky,kz,phase,lnorm_kk)
 !
 !  Cosine wave (as initial condition)
 !
 !  13-jun-06/anders: adapted from sinwave-phase.
 !
       real, dimension (mx,my,mz,mfarray) :: f
-      real :: ampl, kx, ky, kz, phase
+      real :: ampl, kx, ky, kz, phase, fact, k2
       integer :: i
+      logical, optional :: lnorm_kk
+!
+!  possibility to normalize by 1/k if the initial amplitude
+!  is meant to be an amplitude for the B-field.
+!
+      if (present(lnorm_kk)) then
+        k2=kx**2+ky**2+kz**2
+        if (lnorm_kk .and. k2/=0.) then
+          fact=ampl/sqrt(k2)
+        else
+          fact=ampl
+        endif
+      else
+        fact=ampl
+      endif
 !
 !  Set cos wave
 !
-      if (lroot) print*, 'coswave_phase: i, ampl, kx, ky, kz, phase=', &
-          i, ampl, kx, ky, kz, phase
+      if (lroot) print*, 'coswave_phase: i, fact, kx, ky, kz, phase=', &
+          i, fact, kx, ky, kz, phase
 !
       do m=m1,m2; do n=n1,n2
         f(l1:l2,m,n,i) = f(l1:l2,m,n,i) + &
-            ampl*cos(kx*x(l1:l2)+ky*y(m)+kz*z(n)+phase)
+            fact*cos(kx*x(l1:l2)+ky*y(m)+kz*z(n)+phase)
       enddo; enddo
 !
     endsubroutine coswave_phase
@@ -5182,7 +5290,7 @@ module Initcond
       lno_noise,nfact0,lfactors0,compk0,llogbranch0,initpower_med0, &
       kpeak_log0,kbreak0,ldouble0,nfactd0,qirro,lsqrt_qirro,time, &
       cs,lreinit,ltime_old,ltime_new,lrho_nonuni,ilnr,l2d, &
-      lnot_amp, lrandom_ampl)
+      lnot_amp, lrandom_ampl, lfixed_phase)
 !
 !  Produces helical (q**n * (1+q)**(N-n))*exp(-k**l/cutoff**l) spectrum
 !  when kgaussian=0, where q=k/kpeak, n=initpower, N=initpower2,
@@ -5211,12 +5319,13 @@ module Initcond
       use General, only: loptest, roptest
 !
       logical, intent(in), optional :: lscale_tobox, lsquash, lremain_in_fourier, ltime_old
-      logical, intent(in), optional :: ltime_new, lrho_nonuni, lnot_amp, lrandom_ampl
+      logical, intent(in), optional :: ltime_new, lrho_nonuni, lnot_amp, lrandom_ampl, lfixed_phase
       logical, intent(in), optional :: lpower_profile_file, lno_noise, lfactors0
       logical, intent(in), optional :: llogbranch0,ldouble0, lreinit, l2d, lsqrt_qirro
       logical :: lvectorpotential, lscale_tobox1, lsquash1, lremain_in_fourier1, lno_noise1
       logical :: lskip_projection,lfactors,llogbranch,ldouble, ltime, ltime_old1
       logical :: ltime_new1, lrho_nonuni1, l2d1, lsqrt_qirro1, lnot_amp1, lrandom_ampl1
+      logical :: lfixed_phase1
       real, dimension (mx,my,mz,mfarray) :: f
       integer :: i, i1, i2, ikx, iky, ikz, stat, ik, nk, ilnr1
       integer, intent(in), optional :: ilnr
@@ -5274,6 +5383,10 @@ module Initcond
 !  Check whether we want no_noise or not
 !
       lno_noise1 = loptest(lno_noise)
+!
+!  Check whether we want lfixed_phase or not
+!
+      lfixed_phase1 = loptest(lfixed_phase)
 !
 !  Check whether we want l2d or not
 !
@@ -5426,8 +5539,13 @@ module Initcond
               qexp11=1.-qexp1
               u_im(:,:,:,i)=ampl*sqrt(-2*(k2**qexp11-1.)/qexp11)
             endif
-            u_re(:,:,:,i)=u_im(:,:,:,i)*cos(pi*(2*r-1))
-            u_im(:,:,:,i)=u_im(:,:,:,i)*sin(pi*(2*r-1))
+!           if (lfixed_phase1) then
+!             u_re(:,:,:,i)=u_im(:,:,:,i)
+!           else
+            if (.not. lfixed_phase1) then
+              u_re(:,:,:,i)=u_im(:,:,:,i)*cos(pi*(2*r-1))
+              u_im(:,:,:,i)=u_im(:,:,:,i)*sin(pi*(2*r-1))
+            endif
           else
             u_re(:,:,:,i)=ampl*cos(pi*(2*r-1))
             u_im(:,:,:,i)=ampl*sin(pi*(2*r-1))
@@ -5465,6 +5583,15 @@ module Initcond
         enddo
       endif
       if (lroot) k2(1,1,1) = 1.  ! Avoid division by zero
+!
+!  Do phase correction
+!
+      if (lfixed_phase1) then
+        do i=1,i2-i1+1
+          u_re(:,:,:,i)=u_im(:,:,:,i)*cos(-sqrt(k2)*t)
+          u_im(:,:,:,i)=u_im(:,:,:,i)*sin(-sqrt(k2)*t)
+        enddo
+      endif
 !
 !  To get the shell integrated power spectrum E ~ k^n, we need u ~ k^m
 !  and since E(k) ~ u^2 k^2 we have n=2m+2, so m=n/2-1 in 3-D.
@@ -5872,7 +5999,11 @@ module Initcond
             do ikx=1,nx
               ikz=1
 !
-!  (vx, vy, vz) -> ux
+!  (vx, vy, vz) -> ux, but put ux=uy=0 then l2d=T. This option only
+!  makes sense for the nagnetic vector potential, but the same effect
+!  can there be achieved by setting lset_AxAy_zero=T in magnetic.
+!  In hydro, we would instead put lset_uz_zero=T.
+!
               v_re = u_re(ikx,iky,ikz,:); v_im = u_im(ikx,iky,ikz,:)
               if (l2d1) then
                 u_re(ikx,iky,ikz,1:2)=0.
@@ -6025,6 +6156,149 @@ module Initcond
       if (allocated(kz)) deallocate(kz)
 !
     endsubroutine power_randomphase_hel
+!***********************************************************************
+    subroutine bunch_davies(f,i1a,i1b,i2a,i2b,ampl,kpeak)
+!
+!  21-mar-14/axel: adapted from power_randomphase_hel
+!
+      use Fourier, only: fft_xyz_parallel
+      use General, only: loptest, roptest
+!
+      real, dimension (mx,my,mz,mfarray) :: f
+      integer :: i, i1a, i1b, i2a, i2b, ikx, iky, ikz, stat, ik, nk
+      real, dimension (:,:,:,:), allocatable :: u_re, u_im, v_re, v_im
+      real, dimension (:,:,:), allocatable :: k1, r
+      real, dimension (:), allocatable :: kx, ky, kz
+      real, dimension (:), allocatable :: kk
+      real :: ampl, kpeak, scale_factor=1.
+!
+      if (ampl==0.) then
+        if (lroot) print*,'bunch_davies: set variables to zero; i1a,i1b,i2a,i2b=',i1a,i1b,i2a,i2b
+        f(:,:,:,i1a:i1b) = 0.
+        f(:,:,:,i2a:i2b) = 0.
+        return
+      endif
+!
+!  Allocate memory for arrays r and k1.
+!
+      allocate(k1(nx,ny,nz),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate k1')
+      allocate(r(nx,ny,nz),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate r')
+!
+!  Complex auxiliary arrary (u_re,u_im) and (v_re,v_im) 
+!
+      allocate(u_re(nx,ny,nz,3),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate u_re')
+      allocate(u_im(nx,ny,nz,3),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate u_im')
+      allocate(v_re(nx,ny,nz,3),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate v_re')
+      allocate(v_im(nx,ny,nz,3),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate v_im')
+!
+!  One-dimensional wavevector arrays.
+!
+      allocate(kx(nxgrid),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate kx')
+      allocate(ky(nygrid),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate ky')
+      allocate(kz(nzgrid),stat=stat)
+      if (stat>0) call fatal_error('bunch_davies','Could not allocate kz')
+!
+!  Scale factors if box size is not 2*pi
+!
+      scale_factor=2*pi/Lx
+      kx=cshift((/(i-nxgrid/2,i=0,nxgrid-1)/),nxgrid/2)*scale_factor
+      if (lroot.and.ip<10) print*,'AXEL: kx=',kx
+!
+      ky=cshift((/(i-nygrid/2,i=0,nygrid-1)/),nygrid/2)*scale_factor
+      if (lroot.and.ip<10) print*,'AXEL: ky=',ky
+!
+      kz=cshift((/(i-nzgrid/2,i=0,nzgrid-1)/),nzgrid/2)*scale_factor
+      if (lroot.and.ip<10) print*,'AXEL: kz=',kz
+!
+!  Set the 3 components of v_im to Gaussian-distributed random values.
+!
+      do i=1,3
+        call random_number_wrapper(r)
+        call random_number_wrapper(k1)
+        v_im(:,:,:,i)=sqrt(-2*log(r))*sin(2*pi*k1)
+      enddo
+!
+!  Set k1 = |k| array.
+!
+!  In 1-D
+      if (nzgrid==1.and.nygrid==1) then
+        ikz=1
+        iky=1
+        do ikx=1,nx
+          k1(ikx,iky,ikz)=sqrt(kx(ikx+ipx*nx)**2)
+        enddo
+!  In 2-D
+      elseif (nzgrid==1) then
+        ikz=1
+        do iky=1,ny
+          do ikx=1,nx
+            k1(ikx,iky,ikz)=sqrt(kx(ikx+ipx*nx)**2+ky(iky+ipy*ny)**2)
+          enddo
+        enddo
+!  In 3-D
+      else
+        do ikz=1,nz
+          do iky=1,ny
+              do ikx=1,nx
+                k1(ikx,iky,ikz)=sqrt(kx(ikx+ipx*nx)**2+ky(iky+ipy*ny)**2+kz(ikz+ipz*nz)**2)
+              enddo
+          enddo
+        enddo
+      endif
+      if (lroot) k1(1,1,1) = 1.  ! To avoid division by zero.
+!
+!  Put cutoff at kpeak in v_im.
+!
+      where(k1>=kpeak)
+        v_im(:,:,:,1)=0.
+        v_im(:,:,:,2)=0.
+        v_im(:,:,:,3)=0.
+      endwhere
+!
+!  Compute Bunch-Davies vacuum, A = e^(-i*k*eta)/sqrt(2*k), so
+!  E = -dA/deta = +i*k*e^(-i*k*eta)/sqrt(2*k) = i*e^(-i*k*eta)*sqrt(k/2)
+!  Here, v_im serves as a temporary array until the last line.
+!
+      do i=1,3
+        u_re(:,:,:,i)=+ampl*v_im(:,:,:,i)*cos(-k1)/sqrt(k1*2.)
+        u_im(:,:,:,i)=+ampl*v_im(:,:,:,i)*sin(-k1)/sqrt(k1*2.)
+        v_re(:,:,:,i)=-ampl*v_im(:,:,:,i)*sin(-k1)*sqrt(k1/2.)
+        v_im(:,:,:,i)=+ampl*v_im(:,:,:,i)*cos(-k1)*sqrt(k1/2.)
+      enddo
+!
+!  Fourier transform to real space.
+!
+      do i=1,3
+        call fft_xyz_parallel(u_re(:,:,:,i),u_im(:,:,:,i),linv=.true.)
+        call fft_xyz_parallel(v_re(:,:,:,i),v_im(:,:,:,i),linv=.true.)
+      enddo
+!
+!  Use real parts of u and v for A and E.
+!
+      f(l1:l2,m1:m2,n1:n2,i1a:i1b)=u_re
+      f(l1:l2,m1:m2,n1:n2,i2a:i2b)=v_re
+!
+!  Deallocate arrays.
+!
+      if (allocated(k1)) deallocate(k1)
+      if (allocated(r))  deallocate(r)
+      if (allocated(u_re)) deallocate(u_re)
+      if (allocated(u_im)) deallocate(u_im)
+      if (allocated(v_re)) deallocate(v_re)
+      if (allocated(v_im)) deallocate(v_im)
+      if (allocated(kx)) deallocate(kx)
+      if (allocated(ky)) deallocate(ky)
+      if (allocated(kz)) deallocate(kz)
+!
+    endsubroutine bunch_davies
 !***********************************************************************
     subroutine random_isotropic_KS(initpower,f,i1,N_modes)
 !
@@ -6529,6 +6803,7 @@ module Initcond
       real :: Bz_flux, Bz_flux_local
       logical :: exists
       integer :: alloc_err, rec_len
+      integer(KIND=ikind8) :: rlen
       real, parameter :: reduce_factor=0.25
 !
       ! file location settings
@@ -6555,7 +6830,8 @@ module Initcond
         call stop_it_if_any(.not. exists, &
             'mag_init: Magnetogram file not found: "'//trim(mag_field_dat)//'"')
         inquire (iolength=rec_len) 1.0d0
-        open (unit, file=mag_field_dat, form='unformatted', recl=rec_len*bnx*bny, access='direct')
+        rlen=rec_len*bnx*bny
+        open (unit, file=mag_field_dat, form='unformatted', recl=rlen, access='direct')
         do py = 1, nprocxy-1
           partner = find_proc(modulo(py,nprocx),py/nprocx,0)
           ! read Bz data for remote processors

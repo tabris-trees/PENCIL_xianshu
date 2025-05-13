@@ -34,7 +34,8 @@ module Particles_number
   character (len=labellen), dimension(ninit) :: initnpswarm='nothing'
   logical :: llog10_for_admom_above10=.true.
 !
-  integer :: idiag_npswarmm=0, idiag_dvp22mwnp=0, idiag_dvp22mwnp2=0
+  integer :: idiag_npswarmm=0, idiag_npswarmmin=0, idiag_npswarmmax=0
+  integer :: idiag_dvp22mwnp=0, idiag_dvp22mwnp2=0
   integer :: idiag_dtfragp=0, idiag_npsm=0
   integer, parameter :: mmom=24
   integer, dimension(0:mmom) :: idiag_admom=0
@@ -217,7 +218,7 @@ module Particles_number
 !
       if (lfragmentation_par .and. t>=tstart_fragmentation_par) then
 !
-        if (lfirst.and.ldt) dt1_fragmentation=0.0
+        if (lupdate_courant_dt) dt1_fragmentation=0.0
 !
         if (npar_imn(imn)/=0) then
 
@@ -274,7 +275,7 @@ module Particles_number
                     endif
                   endif  ! fragmentation or coagulation
 !  Time-step contribution
-!                  if (lfirst.and.ldt) then
+!                  if (lupdate_courant_dt) then
 !                    dt1_fragmentation(l-nghost) = dt1_fragmentation(l-nghost) +&
 !                        p%cc1(l-nghost)*p%rho1(l-nghost)*4/3.*pi*rhopmat* &
 !                        (fp(j,iap)**3+fp(k,iap)**3)*cdot
@@ -309,7 +310,7 @@ module Particles_number
                     ncoll=ncoll+1
                   endif
 !  Time-step contribution
-!                  if (lfirst.and.ldt) then
+!                  if (lupdate_courant_dt) then
 !                    dt1_fragmentation(l-nghost) = dt1_fragmentation(l-nghost) +&
 !                        p%cc1(l-nghost)*p%rho1(l-nghost)*4/3.*pi*rhopmat*fp(k,iap)**3*cdot
 !                  endif
@@ -330,9 +331,9 @@ module Particles_number
             endif
           enddo ! l1,l2
 !
-          if (lfirst.and.ldt.or.ldiagnos) then
+          if (lupdate_courant_dt.or.ldiagnos) then
             dt1_fragmentation=dt1_fragmentation/cdtpf
-            if (lfirst.and.ldt) dt1_max=max(dt1_max,dt1_fragmentation)
+            if (lupdate_courant_dt) dt1_max=max(dt1_max,dt1_fragmentation)
           endif
 !
         endif ! npar_imn/=0
@@ -386,8 +387,10 @@ module Particles_number
 !  Diagnostic output
 !
       if (ldiagnos) then
-        call sum_par_name(fp(1:npar_loc,inpswarm),idiag_npswarmm)
-        if (idiag_npsm/=0) call integrate_par_name(fp(1:npar_loc,inpswarm)/nwgrid,idiag_npsm)
+        call sum_par_name(fp(1:npar_loc,inpswarm),idiag_npswarmm,len=npar_loc)
+        call max_par_name(fp(1:npar_loc,inpswarm),idiag_npswarmmax)
+        call max_par_name(-fp(1:npar_loc,inpswarm),idiag_npswarmmin,lneg=.true.)
+        call integrate_par_name(fp(1:npar_loc,inpswarm)/nwgrid,idiag_npsm,len=npar_loc)
       endif
 
       if (ldiagnos) then
@@ -462,7 +465,8 @@ module Particles_number
 !  Reset everything in case of reset.
 !
       if (lreset) then
-        idiag_npswarmm=0; idiag_dvp22mwnp=0; idiag_dvp22mwnp2=0
+        idiag_npswarmm=0; idiag_npswarmmin=0; idiag_npswarmmax=0;
+        idiag_dvp22mwnp=0; idiag_dvp22mwnp2=0
         idiag_dtfragp=0; idiag_npsm=0; idiag_admom=0
       endif
 !
@@ -472,6 +476,8 @@ module Particles_number
 
       do iname=1,nname
         call parse_name(iname,cname(iname),cform(iname),'npswarmm',idiag_npswarmm)
+        call parse_name(iname,cname(iname),cform(iname),'npswarmmin',idiag_npswarmmin)
+        call parse_name(iname,cname(iname),cform(iname),'npswarmmax',idiag_npswarmmax)
         call parse_name(iname,cname(iname),cform(iname),'npsm',idiag_npsm)
         do k=0,mmom 
            sdust=itoa(k)

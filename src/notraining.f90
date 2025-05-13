@@ -10,6 +10,7 @@
     use General, only: keep_compiler_quiet
 
     implicit none
+    include 'training.h'
 
     contains
 !***************************************************************
@@ -45,13 +46,7 @@
 
     endsubroutine training_before_boundary
 !***************************************************************
-    subroutine calc_diagnostics_training(f,p)
-
-      real, dimension (mx,my,mz,mfarray) :: f
-      type(pencil_case) :: p
-
-      call keep_compiler_quiet(f)
-      call keep_compiler_quiet(p)
+    subroutine calc_diagnostics_training
 
     endsubroutine calc_diagnostics_training
 !***********************************************************************
@@ -87,4 +82,13 @@
       
     endsubroutine get_slices_training
 !***************************************************************
+    subroutine pushpars2c(p_par)
+
+    use Syscalls, only: copy_addr
+
+    integer, parameter :: n_pars=1
+    integer(KIND=ikind8), dimension(n_pars) :: p_par
+
+    endsubroutine pushpars2c
+!***********************************************************************
   end module Training

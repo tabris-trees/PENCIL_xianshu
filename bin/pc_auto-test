@@ -23,7 +23,7 @@ exec $perl -x -S $0 "$@"     # -x: start from the following line
 #   matching to extract the relevant output lines.
 # To Do:
 # - Add an option to exclude those tests that use MPI
-# - Remove directory from /tmp when encountering Ctl-c
+# - Remove directory from /tmp when encountering Ctrl-C
 # - Treat `svn update' as separate stage that can be `OK' or not
 
 use strict;
@@ -50,10 +50,12 @@ use constant QUIET       => 1;
 use constant LOCK_FAILED => 128; # return status if we can't get lock
 use Cwd;
 use File::Copy;
+use File::Compare;
 use POSIX qw(floor strftime);
 use Getopt::Long;
 use vars qw{ %failed $test_status }; # do we really need global vars here?
 use IPC::Open2;
+use Cwd qw(abs_path);
 
 # ---------------------------------------------------------------------- #
 # Test the following subdirs of samples/ .
@@ -87,6 +89,7 @@ my %tests = (
                          0d-tests/heating_noionize
                          1d-tests/H2_flamespeed
                          1d-tests/horndeski_choiceIII
+                         1d-tests/rel-shock
                          1d-tests/inflationary-B-genesis
                          1d-tests/axionSU2back
                          chiral-diffusion
@@ -141,6 +144,7 @@ my %tests = (
                          streaming-instability-sink
                          1d-tests/hyperdiffusion
                          2d-tests/eccentricity-decay
+                         interstellar
                      )],
              # Level 3 for now contains all non-canonical tests that run
              # successfully
@@ -164,6 +168,9 @@ my %tests = (
                          interlocked-fluxrings
                          conv-slab-flat
                          coronae_heatflux_boris
+                         power_xy/complex
+                         power_xy/integrate_shell
+                         power_xy/integrate_shell_z
                          testfield_nonlin_z
                          spherical-convection
                          spherical-convection-corona
@@ -171,20 +178,9 @@ my %tests = (
                          meanfield_special_e_tensor_GCD
                          dust-accretion
                          superparticle_condensation
-                         superparticle-coagulation
-                         superparticle-condensation-coagulation
                      )],
              # Level 4 for now contains overlong tests (e.g. test that
-             # compile, start and then run for more than 5 minutes on
-             # Frenesi -- this is at least as good as the tests in level
-             # 5, but not practical).
-             #
-             # Note: The following _canonical_ tests fail to finish within 5
-             # minutes:
-             #   random_uu_particles
-             #   interstellar
-             #   geodynamo
-             #   0d-tests/heating_ionize
+             # compile, start and then run -- but take too long time)
              4 => [qw(
                          forced-boundary
                          sound-spherical-bufferzone
@@ -193,7 +189,8 @@ my %tests = (
              # Level 5 for now contains all non-canonical tests that run,
              # but produce wrong results
              5 => [qw(
-                         interstellar
+                         superparticle-coagulation
+                         superparticle-condensation-coagulation
                          hexagon
                          MHD-ABCforcing
                          taylor-couette
@@ -311,6 +308,7 @@ Options:
   -p,  --postproc=PP       \tApply postprocessor PP to output from make
   -F,  --file=<xx>         \tOnly run tests for samples that use module 'xx' (based on 'grep -w')
   -a,  --all-dirs          \tRecurse through all subdirectories of samples/
+       --here              \tRecurse through all subdirectories in current directory
        --level=LEV         \tRun only tests from level LEV
        --max-level=LEV     \tRun all tests below with level <= LEV (default: 2)
        --script-tests=TYPES\tRun script tests matching TYPES, a comma-separated
@@ -354,7 +352,7 @@ Examples:
                                  # documented in bin/reaper
   pc_auto-test -a   # run tests in all subdirs of samples/ with a
                     # referece.out{,.double} file
-  pc_auto-test --level=1         # run all level 1 tests
+  pc_auto-test --level=1+2       # run all level 1 and level 2 tests
   pc_auto-test -l --max-level=1  # list test dirs in levels 0 and 1
   pc_auto-test -al  # list all dirs 'pc_auto-test -a' would run in
   pc_auto-test -aL  # list all run dirs under samples/, even those without
@@ -398,6 +396,7 @@ GetOptions(\%opts,
                -p=s --postproc=s
                -F=s --file=s
                -a   --all-dirs
+                    --here
                     --level=s
                     --max-level=s
                     --script-tests=s
@@ -449,6 +448,7 @@ my $short       = ($opts{'s'} || $opts{'short'}           || 0    );
 my $file        = ($opts{'F'} || $opts{'file'}            || ''   );
 my $postproc    = ($opts{'p'} || $opts{'postproc'}        || ''   );
 my $deep        = ($opts{'a'} || $opts{'all-dirs'}        || 0    );
+my $here        = (              $opts{'here'}            || 0    );
 my $level       = (              $opts{'level'}                   );
 my $max_level   = (              $opts{'max-level'}               );
 my $script_tests = (             $opts{'script-tests'}            );
@@ -490,8 +490,27 @@ my @exit_status=('setting up directory',
 
 $list_only = 1 if ($list_all);
 
+my $timeout_command_found = check_timeout_found();
+if ($timeout_command_found && !$nolock) {
+    # The global lock is on by default because when the time limit is reached,
+    # reaper kills processes based on their name. If we are using the `timeout`
+    # utility, that concern does not apply, and one only needs local_lock.
+    $local_lock = 1;
+}
+
 if ($local_lock) { $lockdir = $pencil_home; }
 $lockfile = $lockdir."/pencil-auto-test-$user.pid";
+
+#If relative paths have been specified, convert to absolute paths. Otherwise,
+#$log_dir is treated as relative to the run directory (not the directory where
+#pc_auto-test was invoked).
+if ($log_dir ne '') {
+    $log_dir = abs_path($log_dir);
+}
+if ($previous_dir ne '') {
+    $previous_dir = abs_path($previous_dir);
+}
+
 
 my $makeopts  = '';
 if ($makejobs) { $makeopts = "--jobs=$makejobs"; }
@@ -590,14 +609,14 @@ unless ($nolock or $list_only) {
 }
 
 # Remember current directory
-my $cwd = `pwd`; chomp($cwd);
+my $cwd = cwd();
 
 # pc_update_autotest
 system("$pencil_home/bin/pc_update_autotest.sh &");
 
 # Make sure we are in the top directory and have the right PATH
 my $topdir = "$pencil_home";
-chdir $topdir;
+if (!$here) { chdir $topdir; }
 $ENV{PATH} .= ":$pencil_home/bin";
 
 # Don't follow these boring subdirectories when recursing through whole tree:
@@ -659,6 +678,9 @@ if (@ARGV) {
     if ($deep) {
         # Scan samples/ tree recursively
         find_test_dirs("$topdir/samples"); # populates @testdirs
+    } elsif ($here) {
+        # Scan the current directory for autotests
+        find_test_dirs(".");
     } else {
         # Use predefined directories
         my @sampdirs;
@@ -700,6 +722,13 @@ if (@ARGV) {
 
 
 # ---------------------------------------------------------------------- #
+sub check_timeout_found {
+    # Check if the timeout command exists on the system.
+    return 0; #Kishore: disabling the use of timeout for now as it causes problems on Norlx51
+    
+    return (`which timeout` ne "");
+}
+# ---------------------------------------------------------------------- #
 sub get_sampdirs {
 # Return list of sample dirs that belong to $level .
     my $level = shift;
@@ -714,7 +743,7 @@ sub get_sampdirs {
         }
     }
 
-    my @requested_levels = split (/[,; ]+/s, $level);
+    my @requested_levels = split (/[+,; ]+/s, $level);
     my @dirs;
     foreach my $requested (sort {$a <=> $b} @requested_levels) {
         my @levels = grep { $_ == $requested } keys %tests;
@@ -928,7 +957,7 @@ sub find_test_dirs {
 # Traverse the samples/ directory tree and find all run directories
     eval { require File::Find };
     if ($@) {
-        die "Could not load File::Find (required for the --deep option):\n"
+        die "Could not load File::Find (required for the --deep and --here option):\n"
           . "$@\n";
     }
     import File::Find qw( find );
@@ -981,9 +1010,15 @@ sub check_cmd_result {
     my $dt    = shift;
 
     if (($phase eq 'starting') || ($phase eq 'running')) {
-        # Check for missing MPI option "--oversubscribe".
+        # Check for missing MPI option "--oversubscribe"
         if ($msg =~ /use the [\-]*oversubscribe option/is) {
             my_ok(0, 1, "Not enough CPU cores! Try 'mpiexec' with the '--oversubscribe' option.", $dir, $phase);
+            return;
+        }
+
+        # Check for a LOCK file that is in the way
+        if ($msg =~ /^\s*pc_run:\s+found LOCK file([\s.]|$)/im) {
+            my_ok(0, 1, "There is a LOCK file in the way! Please check if it can be removed.", $dir, $phase);
             return;
         }
 
@@ -1065,7 +1100,21 @@ sub test_timelimited_shell_cmd {
     my $maxtime  = shift;
     my $procname = shift;
     my @rest = @_;
-    return test_shell_cmd("reaper -t '$maxtime,$procname' '$cmd'", @rest);
+
+    my $time_limit;
+    if (Scalar::Util::looks_like_number($maxtime)) {
+        $time_limit = $maxtime;
+    } else {
+        #$failed++; #dirty hack to make sure an exception in the line below is detected as a failing test.
+        $time_limit = Test::Parse::parse_time($maxtime);
+        #$failed--;
+    }
+
+    if ($timeout_command_found) {
+        return test_shell_cmd("timeout -v --kill-after=10s --preserve-status $time_limit $cmd", @rest);
+    } else {
+        return test_shell_cmd("reaper -t '$maxtime,$procname' '$cmd'", @rest);
+    }
 }
 # ---------------------------------------------------------------------- #
 sub test_perl_cmd {
@@ -1336,14 +1385,14 @@ sub test_results {
         my $comparator;
         eval { $comparator = Test::NumericFileComparator->new($reference_out); };
         if ($@) {
-          my_ok(0, 1, join ("\n",$@), $dir, "results");
-          return;
+            my_ok(0, 1, join ("\n",$@), $dir, "results");
+            return;
         }
         my @message;
         eval { @message = $comparator->compare($ts_file); };
         if ($@) {
-          my_ok(0, 1, join ("\n",$@), $dir, "results");
-          return;
+            my_ok(0, 1, join ("\n",$@), $dir, "results");
+            return;
         }
         if (@message) {
             my $msg = join(
@@ -1355,9 +1404,49 @@ sub test_results {
             $msg .= "\n";
             $msg .= join("  \n", 'Got:', read_lines($ts_file));
             my_ok(0, 1, $msg, $dir, "results");
-        } else {
-            my_ok(0, 0, "", $dir, "results");
+            return;
         }
+
+        # additional "reference_XYZ.out" versus "data/XYZ.dat" checks
+        my @refs = glob ("reference_*.out");
+        my ($ref_file, $cmp_file, @ref_lines, @cmp_lines, $ref_num, $cmp_num, @ref_values, @cmp_values, $ref_nv, $cmp_nv, $row, $col, $ref, $cmp);
+        foreach $ref_file (@refs) {
+            if ($ref_file !~ /^reference_(.*?)\.out$/s) { next; }
+            $cmp_file = "data/".$1.".dat";
+            if (!-r $ref_file || !-r $cmp_file) { next; } # data file does not exist
+            $cmp = compare ($ref_file, $cmp_file);
+            if ($cmp <= 0) { next; } # same content or error while reading
+            @ref_lines = read_values ($ref_file);
+            @cmp_lines = read_values ($cmp_file);
+            $ref_num = $#ref_lines;
+            $cmp_num = $#cmp_lines;
+            if ($ref_num != $cmp_num) {
+                my_ok(0, 1, "number of lines in reference and data of \"".$cmp_file."\" is different (".$ref_num." != ".$cmp_num.")", $dir, "results");
+                return;
+            }
+            for ($row = 0; $row <= $ref_num; $row++) {
+                eval ('@ref_values = '.$ref_lines[$row]);
+                eval ('@cmp_values = '.$cmp_lines[$row]);
+                $ref_nv = $#ref_values;
+                $cmp_nv = $#cmp_values;
+                if ($ref_nv != $cmp_nv) {
+                    my $diff = "< ".$ref_lines[$row]."\n"."> ".$cmp_lines[$row];
+                    my_ok(0, 1, "number of reference and data columns at line ".($row+1)." of \"".$cmp_file."\" is different (".$ref_nv." != ".$cmp_nv.")\n".$diff, $dir, "results");
+                    return;
+                }
+                for ($col = 0; $col <= $ref_nv; $col++) {
+                    $ref = $ref_values[$col];
+                    $cmp = $cmp_values[$col];
+                    if ($ref != $cmp) {
+                        my $diff = "< ".$ref_lines[$row]."\n"."> ".$cmp_lines[$row];
+                        my_ok(0, 1, "value in column ".($col+1)." at line ".($row+1)." of \"".$cmp_file."\" does not match the reference (".$ref." != ".$cmp.")\n".$diff, $dir, "results");
+                        return;
+                    }
+                }
+            }
+        }
+
+        my_ok(0, 0, "", $dir, "results");
     }
 }
 # ---------------------------------------------------------------------- #
@@ -1470,6 +1559,22 @@ sub read_lines {
     @lines;
 }
 # ---------------------------------------------------------------------- #
+sub read_values {
+# Read file an return list of non-empty values
+    my $file = shift;
+    my $msg = "";
+
+    my $data = join ("\n", read_lines ($file));
+    $data =~ s/[\t\r\f]+/ /gs;
+    $data =~ s/^ +//gm;
+    $data =~ s/ +$//gm;
+    $data =~ s/ +/,/gs;
+    $data = "(".$data.")";
+    $data =~ s/\n\s*/)\n(/gs;
+
+    return (split ("\n", $data));
+}
+# ---------------------------------------------------------------------- #
 sub test_rundir {
 # Full program for one run directory: Test compilation, starting, running,
 # results, scripts, and cleanup
@@ -1486,6 +1591,7 @@ sub test_rundir {
     $shortdir =~ s{^samples/}{};        # remove leading 'samples/'
     $0 =~ s/^\s*(\[.*?\])?\s*/[$shortdir] /;
 
+    chdir $cwd;
     # Go to directory and identify it
     if (! -d $dir) {
         print STDERR "No such directory: $dir\n";
@@ -1816,9 +1922,9 @@ sub get_path {
     my $file = shift;
 
     my $path = "";
-    if ($dir) { $path = $dir."/".$path; }
+    if ($dir) { $path = $dir."/"; }
     if ($log_dir) { $path = $log_dir."/".$path; }
-    elsif ($pencil_home) { $path = $pencil_home."/samples/".$path; }
+    elsif ($pencil_home) { $path = cwd()."/"; }
     return $path.$file;
 }
 # ---------------------------------------------------------------------- #

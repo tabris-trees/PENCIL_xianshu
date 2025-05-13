@@ -37,11 +37,14 @@ module Particles_temperature
   logical :: lconst_part_temp=.false.
   logical :: lrayleigh_rad_limit=.false.
   integer :: idmpt=0,ndiffstepTT=3
-  real :: init_part_temp, emissivity=0.0
+  real :: init_part_temp=0., emissivity=0.0
   real :: rdiffconstTT = 0.1178
   real, dimension(:,:,:), allocatable :: weight_array
   real :: Twall=0.0
   real :: cp_part=0.711e7 ! wolframalpha, erg/(g*K)
+  ! Using refractive index for soot for now: m=2.21-1.23i
+  ! im_part_ref=(m^2-1)/(m^2+2)
+  real :: im_part_ref=-0.279
   character(len=labellen), dimension(ninit) :: init_particle_temperature='nothing'
 !
   namelist /particles_TT_init_pars/ &
@@ -50,7 +53,8 @@ module Particles_temperature
   namelist /particles_TT_run_pars/ emissivity, cp_part, lpart_temp_backreac,&
       lrad_part,Twall, lpart_nuss_const,lstefan_flow,lconv_heating, &
       ldiffuse_backtemp,ldiffTT,rdiffconstTT, ndiffstepTT,lconst_part_temp,&
-      ltemp_equip_part_gas,lrayleigh_rad_limit
+      ltemp_equip_part_gas,lrayleigh_rad_limit, ltemp_equip_simplified, &
+      im_part_ref
 !
   integer :: idiag_Tpm=0, idiag_etpm=0
 !
@@ -214,9 +218,9 @@ module Particles_temperature
       real, dimension(:), allocatable :: q_reac, mass_loss,rep,nu
       real, dimension(:), allocatable :: Nuss_p
       real :: volume_cell, stefan_b,Prandtl
-      real :: Qc, Qrad, Qreac, Ap, heat_trans_coef, cond
+      real :: Qc, Qrad, Qreac, Ap, heat_trans_coef, cond, Qc_back_part
       integer :: k, inx0, ix0, iy0, iz0, ierr
-      real :: rho1_point, weight, pmass,lambda_rad,xlambda,qabs, im_part_ref
+      real :: rho1_point, weight, pmass,lambda_rad,xlambda,qabs
       integer :: ixx0, ixx1, iyy0, iyy1, izz0, izz1
       integer :: ixx, iyy, izz, k1, k2
 !
@@ -307,9 +311,6 @@ module Particles_temperature
             if (lrayleigh_rad_limit) then
               lambda_rad=2.898e-1/unit_length/interp_TT(k)
               xlambda=2*pi*fp(k,iap)/lambda_rad
-              ! Using refractive index for soot for now: m=2.21-1.23i
-              ! im_part_ref=(m^2-1)/(m^2+2)
-              im_part_ref=-0.2792
               qabs=-4*xlambda*im_part_ref
             else
               qabs=1
@@ -380,15 +381,19 @@ module Particles_temperature
 !
             if (ltemp_equip_part_gas) then
               if (lparticles_number) then
-                Qc_back(inx0)=Qc_back(inx0)+fp(k,inpswarm)*volume_cell*(Qrad+Qreac)
+                Qc_back_part=fp(k,inpswarm)*volume_cell*(Qrad+Qreac)
+                Qc_back(inx0)=Qc_back(inx0)+Qc_back_part
               else
-                Qc_back(inx0)=Qc_back(inx0)+Qrad+Qreac
+                Qc_back_part=Qrad+Qreac
+                Qc_back(inx0)=Qc_back(inx0)+Qc_back_part
               endif
             else
               if (lparticles_number) then
-                Qc_back(inx0)=Qc_back(inx0)+Qc*fp(k,inpswarm)*volume_cell
+                Qc_back_part=Qc*fp(k,inpswarm)*volume_cell
+                Qc_back(inx0)=Qc_back(inx0)+Qc_back_part
               else
-                Qc_back(inx0)=Qc_back(inx0)+Qc
+                Qc_back_part=Qc
+                Qc_back(inx0)=Qc_back(inx0)+Qc_back_part
               endif
             endif
 !
@@ -402,7 +407,7 @@ module Particles_temperature
               ! For the case of temperature equipartition, the modification to the temperature
               ! equation of the gas phase is done after the particle loop, otherwise it is done here.
               !
-              if (.not. ltemp_equip_part_gas) then
+              if (ltemp_equip_simplified .or. (.not. ltemp_equip_part_gas)) then
                 call find_interpolation_indeces(ixx0,ixx1,iyy0,iyy1,izz0,izz1,fp,k,ix0,iy0,iz0)
 !
 !  Add the source to the df-array
@@ -417,20 +422,20 @@ module Particles_temperature
                   if (ltemperature_nolog) then
                     ! TT, rho
                     df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,iTT) = df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,iTT) &
-                         +Qc_back(inx0)*p%cv1(inx0)*weight_array/(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,irho)*volume_cell)
+                         +Qc_back_part*p%cv1(inx0)*weight_array/(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,irho)*volume_cell)
                   else
                     df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT) = df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT) &
-                         +Qc_back(inx0)*p%cv1(inx0)/exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT)) &
+                         +Qc_back_part*p%cv1(inx0)/exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT)) &
                          *weight_array/(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,irho)*volume_cell)
                   endif
                 else
                   if (ltemperature_nolog) then
                     df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,iTT) = df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,iTT) &
-                         +Qc_back(inx0)*p%cv1(inx0)*weight_array/(exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnrho))*volume_cell)
+                         +Qc_back_part*p%cv1(inx0)*weight_array/(exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnrho))*volume_cell)
                   else
                     !     lnTT, lnrho
                     df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT) = df(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT) &
-                         +Qc_back(inx0)*p%cv1(inx0)/exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT)) &
+                         +Qc_back_part*p%cv1(inx0)/exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnTT)) &
                          *weight_array/(exp(f(ixx0:ixx1,iyy0:iyy1,izz0:izz1,ilnrho))*volume_cell)
                   endif
                 endif
@@ -440,19 +445,19 @@ module Particles_temperature
                 if (ltemperature_nolog) then
                   ! TT, rho
                   f(ix0,iy0,iz0,idmpt) =  f(ix0,iy0,iz0,idmpt) &
-                       +Qc_back(inx0)*p%cv1(inx0)/(f(ix0,iy0,iz0,irho)*volume_cell)
+                       +Qc_back_part*p%cv1(inx0)/(f(ix0,iy0,iz0,irho)*volume_cell)
                 else
                   f(ix0,iy0,iz0,idmpt) =  f(ix0,iy0,iz0,idmpt) &
-                       +Qc_back(inx0)*p%cv1(inx0)*p%TT1(inx0)/(f(ix0,iy0,iz0,irho)*volume_cell)
+                       +Qc_back_part*p%cv1(inx0)*p%TT1(inx0)/(f(ix0,iy0,iz0,irho)*volume_cell)
                 endif
               else
                 if (ltemperature_nolog) then
                   f(ix0,iy0,iz0,idmpt) =  f(ix0,iy0,iz0,idmpt) &
-                       +Qc_back(inx0)*p%cv1(inx0)/(exp(f(ix0,iy0,iz0,ilnrho))*volume_cell)
+                       +Qc_back_part*p%cv1(inx0)/(exp(f(ix0,iy0,iz0,ilnrho))*volume_cell)
                 else
                   !     lnTT, lnrho
                   f(ix0,iy0,iz0,idmpt) =  f(ix0,iy0,iz0,idmpt) &
-                       +Qc_back(inx0)*p%cv1(inx0)*p%TT1(inx0)/(exp(f(ix0,iy0,iz0,ilnrho))*volume_cell)
+                       +Qc_back_part*p%cv1(inx0)*p%TT1(inx0)/(exp(f(ix0,iy0,iz0,ilnrho))*volume_cell)
                 endif
               endif
             endif
@@ -462,13 +467,23 @@ module Particles_temperature
 ! For the case of temperature equipartition, the modification to the temperature
 ! equation of the gas phase is done here, after the particle loop.
 !
-        if (ltemp_equip_part_gas) then    
-          if (ltemperature_nolog) then
-            df(l1:l2,m,n,iTT)  = (df(l1:l2,m,n,iTT)*p%rho*p%cv&
-                 +p%cond_heat+Qc_back/volume_cell)/(p%rho*p%cv+p%part_heatcap)
+        if (ltemp_equip_part_gas) then
+          if (ltemp_equip_simplified) then
+            if (ltemperature_nolog) then
+              df(l1:l2,m,n,iTT)  = df(l1:l2,m,n,iTT) &
+                   +p%latent_heat/(p%rho*p%cv)
+            else
+              df(l1:l2,m,n,ilnTT)= df(l1:l2,m,n,ilnTT) &
+                   +p%latent_heat/(p%rho*p%cv*p%TT)
+            endif
           else
-            df(l1:l2,m,n,ilnTT)= (df(l1:l2,m,n,ilnTT)*p%TT*p%rho*p%cv&
-                 +p%cond_heat+Qc_back/volume_cell)/((p%rho*p%cv+p%part_heatcap)*p%TT)
+            if (ltemperature_nolog) then
+              df(l1:l2,m,n,iTT)  = (df(l1:l2,m,n,iTT)*p%rho*p%cv&
+                   +p%latent_heat+Qc_back/volume_cell)/(p%rho*p%cv+p%part_heatcap)
+            else
+              df(l1:l2,m,n,ilnTT)= (df(l1:l2,m,n,ilnTT)*p%TT*p%rho*p%cv&
+                   +p%latent_heat+Qc_back/volume_cell)/((p%rho*p%cv+p%part_heatcap)*p%TT)
+            endif
           endif
         endif
 !

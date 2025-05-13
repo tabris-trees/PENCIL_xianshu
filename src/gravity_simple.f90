@@ -62,10 +62,16 @@ module Gravity
   real :: g_E, g_F, Rgal=impossible, Rsol=impossible
   real :: cs0hs=0.0, H0hs=0.0
   real :: potx_const=0.0, poty_const=0.0, potz_const=0.0
+  real :: accretor_grav=0., accretor_speed=0., accretor_rsoft=0., kaccretor, cdt_accretor=0.
   integer :: n_pot=10
   integer :: n_adjust_sphersym=0
   character (len=labellen) :: gravx_profile='zero', gravy_profile='zero', &
-                              gravz_profile='zero'
+                              gravz_profile='zero', grav_type='default'
+
+  integer :: enum_gravx_profile = 0
+  integer :: enum_gravy_profile = 0
+  integer :: enum_gravz_profile = 0
+  integer :: enum_grav_type     = 0
 !
 !  Parameters used by other modules (only defined for other gravities)
 !
@@ -74,6 +80,7 @@ module Gravity
   logical :: lcalc_zinfty=.false.
   logical :: lboussinesq_grav=.false.
   logical :: ladjust_sphersym=.false.
+  logical :: laccretor_peri=.false.
 
   real :: g0=0.0
   real :: lnrho_bot=0.0, lnrho_top=0.0, ss_bot=0.0, ss_top=0.0
@@ -89,7 +96,8 @@ module Gravity
       lcalc_zinfty, kappa_x1, kappa_x2, kappa_z1, kappa_z2, reduced_top, &
       lboussinesq_grav, n_pot, cs0hs, H0hs, grav_tilt, grav_amp, &
       potx_const,poty_const,potz_const, zclip, n_adjust_sphersym, gravitational_const, &
-      mass_cent_body, g_A_factor, g_C_factor, g_B_factor, g_D_factor, Rsol, Rgal
+      mass_cent_body, g_A_factor, g_C_factor, g_B_factor, g_D_factor, Rsol, Rgal, &
+      grav_type, accretor_grav, accretor_speed, accretor_rsoft, laccretor_peri
 !
   namelist /grav_run_pars/ &
       gravx_profile, gravy_profile, gravz_profile, gravx, gravy, gravz, &
@@ -100,7 +108,8 @@ module Gravity
       lcalc_zinfty, kappa_x1, kappa_x2, kappa_z1, kappa_z2, reduced_top, &
       lboussinesq_grav, n_pot, grav_tilt, grav_amp, &
       potx_const,poty_const,potz_const, zclip, n_adjust_sphersym, gravitational_const, &
-      mass_cent_body, g_A_factor, g_C_factor, g_B_factor, g_D_factor, Rsol, Rgal
+      mass_cent_body, g_A_factor, g_C_factor, g_B_factor, g_D_factor, Rsol, Rgal, &
+      grav_type, accretor_grav, accretor_speed, accretor_rsoft, laccretor_peri, cdt_accretor
 !
 !  Diagnostic variables for print.in
 ! (needs to be consistent with reset list below)
@@ -112,6 +121,10 @@ module Gravity
                                    ! DIAG_DOC: dV$ \quad(total potential
                                    ! DIAG_DOC: energy)
   integer :: idiag_ugm=0           ! DIAG_DOC: $\left<\uv \cdot \gv\right>$
+  integer :: idiag_rugm=0          ! DIAG_DOC: $\left<\varrho \uv \cdot \gv\right>$
+  integer :: idiag_rgxm=0          ! DIAG_DOC: $\left<\varrho g_x \right>$
+  integer :: idiag_Wgrav=0         ! DIAG_DOC: $\int\varrho \uv \cdot \gv \, dV$
+  integer :: idiag_Fgravx=0        ! DIAG_DOC: $\int\varrho g_x \, dV$
 !
 ! xy averaged diagnostics given in xyaver.in written every it1d timestep
 !
@@ -148,6 +161,53 @@ module Gravity
   real ::G4pi
   real, dimension(:,:), pointer :: reference_state
 !
+! for transpilation: strings used as case markers in select case statements tb executed on the GPU
+!                    When adding new cases, extend here (LEN and dimension), if necessary
+!
+     !commented out for now since does not work at least in the container
+     !character(LEN=*),dimension(15) :: gravx_profile_strings=(/ &
+     ! 'zero', &
+     ! 'const', &
+     ! 'const_tilt', &
+     ! 'linear_x', &
+     ! 'linear_zdep', &
+     ! 'tanh-pot', &
+     ! 'sinusoidal', &
+     ! 'Baker74', &
+     ! 'kepler', &
+     ! 'kepler_2d', &
+     ! 'CZbot1', &
+     ! 'CZmid1', &
+     ! 'solid_sphere', &
+     ! 'loop', &
+     ! 'half-loop'/)
+
+     ! character(LEN=*),dimension(4),parameter :: gravy_profile_strings=(/ &
+     ! 'zero','const','sinusoidal','kepler'/)
+
+     ! character(LEN=*),dimension(19),parameter :: gravz_profile_strings=(/ &
+     ! 'zero', &
+     ! 'const', &
+     ! 'const_tilt', &
+     ! 'tanh', &
+     ! 'boussinesq', &
+     ! 'const_zero', &
+     ! 'linear', &
+     ! 'solid_sphere', &
+     ! 'profile', &
+     ! 'spherical', &
+     ! 'linear_xdep', &
+     ! 'linear_smoothed', &
+     ! 'sinusoidal', &
+     ! 'loop', &
+     ! 'kepler', &
+     ! 'Ferriere', &
+     ! 'Ferriere-R', &
+     ! 'Galactic-hs', &
+     ! 'reduced_top'/)
+
+     ! character(LEN=8),dimension(2),parameter :: grav_type_strings =(/'accretor','default'/)
+
   contains
 !***********************************************************************
     subroutine register_gravity
@@ -204,9 +264,9 @@ module Gravity
       if (lrun) then
         if (gravx_profile == 'zero' .and. &
             gravy_profile == 'zero' .and. &
-            gravz_profile == 'zero') then
+            gravz_profile == 'zero' .and. &
+            grav_type == 'default') &
           call warning('initialize_gravity','You do not need gravity_simple for zero gravity')
-        endif
       endif
 !
 !  Possibility of specifying zref (if zinfty is not given).
@@ -254,10 +314,12 @@ module Gravity
       select case (gravx_profile)
 !
       case ('zero')
-        if (lroot) print*,'initialize_gravity: no x-gravity'
-        gravx_xpencil=0.
-        lgravx_gas=.false.
-        lgravx_dust=.false.
+        if (grav_type=='default') then
+          if (lroot) print*,'initialize_gravity: no x-gravity'
+          gravx_xpencil=0.
+          lgravx_gas=.false.
+          lgravx_dust=.false.
+        endif
 !
       case ('const')
         if (lroot) print*,'initialize_gravity: constant x-grav=', gravx
@@ -382,10 +444,12 @@ module Gravity
       select case (gravy_profile)
 !
       case ('zero')
-        if (lroot) print*,'initialize_gravity: no y-gravity'
-        gravy_ypencil=0.
-        lgravy_gas=.false.
-        lgravy_dust=.false.
+        if (grav_type=='default') then
+          if (lroot) print*,'initialize_gravity: no y-gravity'
+          gravy_ypencil=0.
+          lgravy_gas=.false.
+          lgravy_dust=.false.
+        endif
 !
       case ('const')
         if (lroot) print*,'initialize_gravity: constant y-grav=', gravy
@@ -415,10 +479,12 @@ module Gravity
       select case (gravz_profile)
 !
       case ('zero')
-        if (lroot) print*,'initialize_gravity: no z-gravity'
-        gravz_zpencil=0.
-        lgravz_gas=.false.
-        lgravz_dust=.false.
+        if (grav_type=='default') then
+          if (lroot) print*,'initialize_gravity: no z-gravity'
+          gravz_zpencil=0.
+          lgravz_gas=.false.
+          lgravz_dust=.false.
+        endif
 !
       case ('const')
         if (lroot) print*,'initialize_gravity: constant gravz=', gravz
@@ -603,6 +669,13 @@ module Gravity
         call fatal_error('initialize_gravity','no such gravz_profile: '//trim(gravz_profile))
 !
       endselect
+!
+!  Compute parameter for periodic accretor potential.
+!
+      if (laccretor_peri) then
+        kaccretor=pi/Lxyz(1)
+        if (lroot) print*,'kaccretor=',kaccretor
+      endif
 !
 !  Sanity check.
 !
@@ -888,9 +961,14 @@ module Gravity
         lpenc_diagnos(i_epot)=.true.
         lpenc_diagnos(i_uu)=.true.
       endif
-      if (idiag_ugm/=0) then
+      if (idiag_ugm/=0 .or. idiag_rugm/=0 .or. idiag_Wgrav/=0) then
         lpenc_diagnos(i_uu)=.true.
         lpenc_diagnos(i_gg)=.true.
+        if (idiag_rugm/=0 .or. idiag_Wgrav/=0) lpenc_diagnos(i_rho)=.true.
+      endif
+      if (idiag_rgxm/=0 .or. idiag_Fgravx/=0) then
+        lpenc_diagnos(i_gg)=.true.
+        lpenc_diagnos(i_rho)=.true.
       endif
       if (idiag_epotmxy/=0) then
         lpenc_diagnos2d(i_epot)=.true.
@@ -927,13 +1005,36 @@ module Gravity
       intent(in) :: f
       intent(inout) :: p
 !
-      if (lpencil(i_gg)) then
-        p%gg(:,1) = gravx_xpencil(l1:l2)
-        p%gg(:,2) = gravy_ypencil(m)
-        p%gg(:,3) = gravz_zpencil(n)
-      endif
+      real, dimension (nx) :: fact, xaccretor, one_over_r
 !
-      if (lpencil(i_epot)) p%epot=p%rho*(potx_xpencil(l1:l2)+poty_ypencil(m)+potz_zpencil(n))
+      select case (grav_type)
+!
+      case ('accretor')
+        if (lpencil(i_gg)) then
+          if (laccretor_peri) then
+            xaccretor=atan(tan(kaccretor*(x(l1:l2)-accretor_speed*t)))/kaccretor
+          else
+            xaccretor=x(l1:l2)-accretor_speed*t
+          endif
+          one_over_r=1./sqrt(xaccretor**2+y(m)**2+z(n)**2+accretor_rsoft**2)
+          fact=-accretor_grav*one_over_r**3
+          p%gg(:,1) = fact*xaccretor
+          p%gg(:,2) = fact*y(m)
+          p%gg(:,3) = fact*z(n)
+          if (lpencil(i_epot)) p%epot=-accretor_grav*one_over_r
+        endif
+!
+!  timestep
+!
+        if (cdt_accretor/=0.) advec2=advec2+(accretor_speed*dline_1(:,1)/cdt_accretor)**2
+      case ('default')
+        if (lpencil(i_gg)) then
+          p%gg(:,1) = gravx_xpencil(l1:l2)
+          p%gg(:,2) = gravy_ypencil(m)
+          p%gg(:,3) = gravz_zpencil(n)
+        endif
+        if (lpencil(i_epot)) p%epot=p%rho*(potx_xpencil(l1:l2)+poty_ypencil(m)+potz_zpencil(n))
+      endselect
 !
       call keep_compiler_quiet(f)
 !
@@ -1033,7 +1134,11 @@ module Gravity
         call sum_mn_name(p%epot,idiag_epot)
         if (idiag_ugm/=0) &
           call sum_mn_name(p%uu(:,1)*p%gg(:,1) + p%uu(:,2)*p%gg(:,2) + p%uu(:,3)*p%gg(:,3),idiag_ugm)
+        call sum_mn_name(p%rho*(p%uu(:,1)*p%gg(:,1) + p%uu(:,2)*p%gg(:,2) + p%uu(:,3)*p%gg(:,3)),idiag_rugm)
+        call sum_mn_name(p%rho*p%gg(:,1),idiag_rgxm)
         call integrate_mn_name(p%epot,idiag_epottot)
+        call integrate_mn_name(p%rho*(p%uu(:,1)*p%gg(:,1) + p%uu(:,2)*p%gg(:,2) + p%uu(:,3)*p%gg(:,3)),idiag_Wgrav)
+        call integrate_mn_name(p%rho*p%gg(:,1),idiag_Fgravx)
       endif
 !
 !  Gravity 1-D diagnostics.
@@ -1332,7 +1437,8 @@ module Gravity
 !  (this needs to be consistent with what is defined above!)
 !
       if (lreset) then
-        idiag_epot=0; idiag_epottot=0; idiag_ugm=0
+        idiag_epot=0; idiag_epottot=0; idiag_ugm=0; idiag_rugm=0; idiag_rgxm=0
+        idiag_Wgrav=0; idiag_Fgravx=0
         idiag_epotmx=0; idiag_epotuxmx=0; idiag_epotmy=0; idiag_epotmz=0;
         idiag_epotmxy=0; idiag_epotuzmz=0; idiag_epotuxmxy=0
       endif
@@ -1343,6 +1449,10 @@ module Gravity
         call parse_name(iname,cname(iname),cform(iname),'epot',idiag_epot)
         call parse_name(iname,cname(iname),cform(iname),'epottot',idiag_epottot)
         call parse_name(iname,cname(iname),cform(iname),'ugm',idiag_ugm)
+        call parse_name(iname,cname(iname),cform(iname),'rugm',idiag_rugm)
+        call parse_name(iname,cname(iname),cform(iname),'rgxm',idiag_rgxm)
+        call parse_name(iname,cname(iname),cform(iname),'Wgrav',idiag_Wgrav)
+        call parse_name(iname,cname(iname),cform(iname),'Fgravx',idiag_Fgravx)
       enddo
 !
 !  Check for those quantities for which we want yz-averages.
@@ -1405,5 +1515,48 @@ module Gravity
       is_constant_zgrav = gravx_profile=='zero'.and.gravy_profile=='zero'.and.gravz_profile=='const'
 
     endfunction is_constant_zgrav
+!***********************************************************************
+    subroutine pushpars2c(p_par)
+
+    use Syscalls, only: copy_addr
+    use General , only: pos_in_array, string_to_enum
+
+    integer, parameter :: n_pars=50
+    integer(KIND=ikind8), dimension(n_pars) :: p_par
+
+    call copy_addr(gravz,p_par(1))
+    call copy_addr(gravz_zpencil,p_par(2)) ! (mz)
+    call copy_addr(zgrav,p_par(3))
+    call copy_addr(accretor_grav,p_par(4))
+    call copy_addr(accretor_speed,p_par(5))
+    call copy_addr(accretor_rsoft,p_par(6))
+    call copy_addr(kaccretor,p_par(7))
+    call copy_addr(lxyzdependence,p_par(8)) ! bool
+    call copy_addr(lboussinesq_grav,p_par(9)) ! bool
+    call copy_addr(laccretor_peri,p_par(10)) ! bool
+    call copy_addr(gravx_xpencil,p_par(11)) ! (mx)
+    call copy_addr(potx_xpencil,p_par(12)) ! (mx)
+    call copy_addr(gravy_ypencil,p_par(13)) ! (my)
+    call copy_addr(poty_ypencil,p_par(14)) ! (my)
+    call copy_addr(potz_zpencil,p_par(15)) ! (mz)
+    call copy_addr(xdep,p_par(16)) ! (mx)
+    call copy_addr(zdep,p_par(17)) ! (mz)
+
+!    enum_gravx_profile = pos_in_array(gravx_profile,gravx_profile_strings)
+!    enum_gravy_profile = pos_in_array(gravy_profile,gravy_profile_strings)
+!    enum_gravz_profile = pos_in_array(gravz_profile,gravz_profile_strings)
+!    enum_grav_type     = pos_in_array(grav_type,grav_type_strings)
+    call string_to_enum(enum_gravx_profile,gravx_profile)
+    call string_to_enum(enum_gravy_profile,gravy_profile)
+    call string_to_enum(enum_gravz_profile,gravz_profile)
+    call string_to_enum(enum_grav_type    ,grav_type)
+
+    call copy_addr(enum_gravx_profile,p_par(18))   ! int
+    call copy_addr(enum_gravy_profile,p_par(19))   ! int
+    call copy_addr(enum_gravz_profile,p_par(20))   ! int
+    call copy_addr(enum_grav_type    ,p_par(21))   ! int
+    call copy_addr(cdt_accretor,p_par(22))
+
+    endsubroutine pushpars2c
 !***********************************************************************
 endmodule Gravity

@@ -79,6 +79,9 @@ module Mpicomm
 !
     endsubroutine initialize_mpicomm
 !***********************************************************************
+    subroutine create_communicators
+    endsubroutine create_communicators
+!***********************************************************************
     subroutine update_neighbors
 !
 ! Update neighbor processes for communication.
@@ -1570,6 +1573,11 @@ module Mpicomm
     subroutine mpifinalize
 !
     endsubroutine mpifinalize
+!***********************************************************************
+    subroutine mpiabort
+!
+    STOP 1                    ! Return nonzero exit status
+    endsubroutine mpiabort
 !***********************************************************************
     function mpiwtime()
 !

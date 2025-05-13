@@ -40,7 +40,7 @@ module Energy
   real, dimension (ninit) :: ampl_lnTT=0.0
   real :: lnTT_const=0.0, TT_const=1.0
   real :: Kgperp=0.0, Kgpara=0.0
-  real :: chi=impossible, chi_jump=1., chi_z0=0.0, chi_zwidth=0.0
+  real :: chi=impossible, chi_jump=1., chi_z0=0.0, chi_zwidth=0.0, chi_r_reduce=0.0
   real :: zbot=0.0, ztop=0.0
   real :: center1_x=0.0, center1_y=0.0, center1_z=0.0
   real :: r_bcz=0.0, chi_shock=0.0, chi_hyper3=0.0, chi_hyper3_mesh=5.0
@@ -59,7 +59,7 @@ module Energy
   logical :: lupw_lnTT=.false., lcalc_heat_cool=.false., lheatc_hyper3=.false.
   logical :: lheatc_Kconst=.false., lheatc_Kprof=.false., lheatc_Karctan=.false.
   logical :: lheatc_tensordiffusion=.false., lheatc_hyper3_mesh=.false.
-  logical :: lheatc_chiconst=.false., lheatc_chiconst_accurate=.false.
+  logical :: lheatc_chiconst=.false., lheatc_chiconst_accurate=.false., lheatc_chi_reduce_ddr=.false.
   logical :: lfreeze_lnTTint=.false., lfreeze_lnTText=.false.
   logical :: lhcond_global=.false., lheatc_chicubicstep=.false.
   logical :: lheatc_shock=.false., lheatc_hyper3_polar=.false.
@@ -110,7 +110,7 @@ module Energy
       cool, beta_bouss, borderss, lmultilayer, lcalc_TTmean, &
       temp_zaver_range, h_sld_ene, nlf_sld_ene, div_sld_ene, &
       gradTT0, w_sldchar_ene, chi_z0, chi_jump, chi_zwidth, &
-      hcond0_kramers, nkramers
+      hcond0_kramers, nkramers,chi_r_reduce
 !
 !  Diagnostic variables for print.in
 ! (needs to be consistent with reset list below)
@@ -289,7 +289,7 @@ module Energy
         if (dimensionality<3)lisotropic_advection=.true.
         lslope_limit_diff = .true.
         if (isld_char == 0) then
-          call farray_register_auxiliary('sld_char',isld_char,communicated=.true.)
+          call farray_register_auxiliary('sld_char',isld_char,communicated=.true.,on_gpu=lgpu)
           if (lroot) write(15,*) 'sld_char = fltarr(mx,my,mz)*one'
           aux_var(aux_count)=',sld_char'
           if (naux+naux_com <  maux+maux_com) aux_var(aux_count)=trim(aux_var(aux_count))//' $'
@@ -383,6 +383,7 @@ module Energy
       lheatc_chiconst = .false.
       lheatc_chicubicstep = .false.
       lheatc_kramers= .false.
+      lheatc_chi_reduce_ddr=.false.
 !
 !  Initialize thermal diffusion.
 !
@@ -418,6 +419,9 @@ module Energy
         case ('chi-const')
           lheatc_chiconst=.true.
           call information('initialize_energy','heat conduction: constant chi')
+        case ('chi-no-ddrsph')
+          lheatc_chi_reduce_ddr=.true.
+          call information('initialize_energy','heat conduction: reduce chi in r direction')
         case ('chi-cubicstep')
           lheatc_chicubicstep=.true.
           call information('initialize_energy','heat conduction: cubic step profile of chi')
@@ -813,7 +817,7 @@ module Energy
         endif
       endif
 !
-      if (lheatc_chiconst.or.lheatc_chicubicstep) then
+      if (lheatc_chiconst.or.lheatc_chicubicstep.or.lheatc_chi_reduce_ddr) then
         if (ltemperature_nolog) then
           lpenc_requested(i_del2TT)=.true.
           lpenc_requested(i_gTT)=.true.
@@ -1157,7 +1161,7 @@ module Energy
 !
 !  ``cs2/dx^2'' for timestep
 !
-      if (lfirst.and.ldt.and.ldensity.and.lhydro) then
+      if (lupdate_courant_dt.and.ldensity.and.lhydro) then
         if (lreduced_sound_speed) then
 !          if (lscale_to_cs2top) then
 !            p%advec_cs2=reduce_cs2*cs2top*dxyz_2
@@ -1266,6 +1270,7 @@ module Energy
 !
       diffus_chi=0.; diffus_chi3=0.
       if (lheatc_chiconst) call calc_heatcond_constchi(df,p)
+      if (lheatc_chi_reduce_ddr) call calc_heatcond_chi_no_ddrsph(f,df,p)
       if (lheatc_chicubicstep) call calc_heatcond_cubicstepchi(df,p)
       if (lheatc_Kconst)   call calc_heatcond_constK(df,p)
       if (lheatc_Kprof)    call calc_heatcond(f,df,p)
@@ -1294,7 +1299,7 @@ module Energy
         else
           thdiff=thdiff+chi_hyper3*p%del6lnTT
         endif
-        if (lfirst.and.ldt) diffus_chi3=diffus_chi3+chi_hyper3*dxyz_6
+        if (lupdate_courant_dt) diffus_chi3=diffus_chi3+chi_hyper3*dxyz_6
         if (headtt) print*,'denergy_dt: chi_hyper3=', chi_hyper3
       endif
 !
@@ -1304,7 +1309,7 @@ module Energy
           if (.not.ltemperature_nolog) tmp=tmp*p%TT1
           thdiff = thdiff + chi_hyper3_mesh*pi5_1/60.*tmp*dline_1(:,j)
         enddo
-        if (lfirst.and.ldt) then
+        if (lupdate_courant_dt) then
           advec_hypermesh_ss=chi_hyper3_mesh*pi5_1*sqrt(dxyz_2)
           advec2_hypermesh=advec2_hypermesh+advec_hypermesh_ss**2
         endif
@@ -1317,7 +1322,7 @@ module Energy
           if (.not.ltemperature_nolog) tmp=tmp*p%TT1
           thdiff = thdiff + chi_hyper3*pi4_1*tmp*dline_1(:,j)**2
         enddo
-        if (lfirst.and.ldt) diffus_chi3=diffus_chi3+chi_hyper3*pi4_1*dxmin_pencil**4
+        if (lupdate_courant_dt) diffus_chi3=diffus_chi3+chi_hyper3*pi4_1*dxmin_pencil**4
         if (headtt) print*,'denergy_dt: chi_hyper3=', chi_hyper3
       endif
 !
@@ -1362,7 +1367,7 @@ module Energy
 !
 !  Information on the timescales.
 !
-      if (lfirst.and.ldt) then
+      if (lupdate_courant_dt) then
 
         maxdiffus=max(maxdiffus,diffus_chi)
         maxdiffus3=max(maxdiffus3,diffus_chi3)
@@ -1847,7 +1852,7 @@ module Energy
 !
       if (headtt) print*,'calc_heatcond_shock: added thdiff'
 !
-      if (lfirst.and.ldt) then
+      if (lupdate_courant_dt) then
         if (leos_idealgas) then
           diffus_chi=diffus_chi+(gamma*chi_shock*p%shock)*dxyz_2
         else
@@ -2031,9 +2036,45 @@ module Energy
 !
 !  Check maximum diffusion from thermal diffusion.
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+gamma*chi*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+gamma*chi*dxyz_2
 !
     endsubroutine calc_heatcond_constchi
+!***********************************************************************
+    subroutine calc_heatcond_chi_no_ddrsph(f,df,p)
+!
+!  For spherical coordinates only. Same as chi-const, but the
+!  r-gradient will be reduced by a factor of 1-chi_r_reduce,
+!  i.e. heat conduction in the radial direction is reduced.
+!
+!  27-mar-25/hongzhe and kuan: coded
+!
+      use Sub, only: dot
+      use Deriv, only: der_x,der2_x
+!
+      real, dimension(mx,my,mz,mfarray), intent(in) :: f
+      real, dimension (mx,my,mz,mvar), intent(inout) :: df
+      type (pencil_case), intent(in) :: p
+!
+      real, dimension (nx) :: rr, g2,g2_r, dlnrhodx, dTTdx, d2TTdx2
+!
+!  For now only implemented for ltemperature_nolog=T
+!
+      if ((.not.lspherical_coords) .or. (.not.ltemperature_nolog)) &
+        call not_implemented('calc_heatcond_chi_no_ddrsph', 'for non-spherical coords or lnTT')
+!
+      call dot(p%glnrho,p%gTT,g2)
+      g2=g2+p%del2TT
+!
+      rr=x(l1:l2)
+      call der_x(f(:,m,n,ilnrho),dlnrhodx)
+      call der_x(f(:,m,n,iTT),dTTdx)
+      call der2_x(f(:,m,n,iTT),d2TTdx2)
+      g2_r = dlnrhodx*dTTdx + 2./rr*dTTdx+d2TTdx2
+      g2 = g2 - chi_r_reduce*g2_r
+!
+      df(l1:l2,m,n,iTT) = df(l1:l2,m,n,iTT) + gamma*chi*g2
+!
+    endsubroutine calc_heatcond_chi_no_ddrsph
 !***********************************************************************
     subroutine calc_heatcond_cubicstepchi(df,p)
 !
@@ -2080,7 +2121,7 @@ module Energy
 !
 !  Check maximum diffusion from thermal diffusion.
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+gamma*chi_z*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+gamma*chi_z*dxyz_2
 !
     endsubroutine calc_heatcond_cubicstepchi
 !***********************************************************************
@@ -2123,7 +2164,7 @@ module Energy
 !
 !  Check maximum diffusion from thermal diffusion.
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+chix*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+chix*dxyz_2
 !
     endsubroutine calc_heatcond_constK
 !***********************************************************************
@@ -2169,7 +2210,7 @@ module Energy
 !
 !  Check maximum diffusion from thermal diffusion.
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+chix*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+chix*dxyz_2
 !
     endsubroutine calc_heatcond_Ktherm
 !***********************************************************************
@@ -2208,7 +2249,7 @@ module Energy
 
       df(l1:l2,m,n,ilntt) = df(l1:l2,m,n,ilntt) + thdiff
 
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+(gamma*p%cp1*Krho1)*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+(gamma*p%cp1*Krho1)*dxyz_2
 
     endsubroutine calc_heatcond_kramers
 !***********************************************************************
@@ -2257,7 +2298,7 @@ module Energy
 !
 !  Check maximum diffusion from thermal diffusion.
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+gamma*chix*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+gamma*chix*dxyz_2
 !
     endsubroutine calc_heatcond_arctan
 !***********************************************************************
@@ -2328,7 +2369,7 @@ module Energy
 !
 !  Check maximum diffusion from thermal diffusion.
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+gamma*chix*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+gamma*chix*dxyz_2
 !
     endsubroutine calc_heatcond
 !***********************************************************************
@@ -2365,7 +2406,7 @@ module Energy
         cosbgT=cosbgT/sqrt(gT2*b2)
       endwhere
 !
-      if (lfirst.and.ldt) diffus_chi=diffus_chi+cosbgT*gamma*Kgpara*p%rho1*p%cp1*dxyz_2
+      if (lupdate_courant_dt) diffus_chi=diffus_chi+cosbgT*gamma*Kgpara*p%rho1*p%cp1*dxyz_2
 !
     endsubroutine calc_heatcond_tensor
 !***********************************************************************
@@ -2380,7 +2421,7 @@ module Energy
       real, dimension  (nx) :: part_den2
       real, dimension  (nx) :: lgT
 !
-      real                  :: a0=1., a1=1., a2=1.
+      real                  :: a0, a1, a2
 !
       character (len=3) :: channel
 !

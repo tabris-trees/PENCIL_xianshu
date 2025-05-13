@@ -8,21 +8,10 @@ import os
 from os.path import join, exists, split, islink, realpath, abspath, basename
 import numpy as np
 
-from pencil.util import PathWrapper
+from pencil.util import PathWrapper, pc_print
 
-try:
-    from mpi4py import MPI
-    comm = MPI.COMM_WORLD
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    l_mpi = True
-    l_mpi = l_mpi and (size != 1)
-except ImportError:
-    rank = 0
-    size = 1
-    comm = None
-    l_mpi = False
-
+class CommandFailedError(RuntimeError):
+    pass
 
 def simulation(*args, **kwargs):
     """
@@ -124,7 +113,7 @@ class __Simulation__(object):
         self,
         path_root=".",
         name=False,
-        start_optionals=False,
+        start_optionals=True,
         optionals=True,
         quiet=True,
         rename_submit_script=False,
@@ -218,7 +207,7 @@ class __Simulation__(object):
         if islink(join(path_root, self.name, "data")):
             link_data = True
             oldtmp = os.path.realpath(join(path_root, self.name, "data"))
-            newtmp = join(str.strip(str.strip(oldtmp, "data"), self.name), name, "data")
+            newtmp = oldtmp.replace(self.name, name)
             if exists(newtmp) and OVERWRITE == False:
                 raise ValueError("Data directory {0} already exists".format(newtmp))
             else:
@@ -235,14 +224,17 @@ class __Simulation__(object):
         else:
             has_initial_condition_dir = False
 
-        if type(optionals) == type(["list"]):
-            optionals = self.optionals + optionals  # optional files to be copied
-        if optionals == True:
-            optionals = self.optionals
-        if type(optionals) == type("string"):
+        if isinstance(optionals, list):
+            optionals = self.optionals + optionals
+        elif isinstance(optionals, str):
+            #Kishore: why is it that only in this case, self.optionals is not appended?
             optionals = [optionals]
-        if type(optionals) != type(["list"]):
-            print("! ERROR: optionals must be of type list!")
+        elif optionals is True:
+            optionals = self.optionals
+        elif optionals is False:
+            optionals = []
+        else:
+            raise TypeError("optionals must be bool, string, or list")
 
         tmp = []
         for opt in optionals:
@@ -252,14 +244,16 @@ class __Simulation__(object):
         optionals = tmp
 
         # optional files to be copied
-        if type(start_optionals) == type(["list"]):
+        if isinstance(start_optionals, list):
             start_optionals = self.start_optionals + start_optionals
-        if start_optionals == False:
+        elif start_optionals is False:
+            start_optionals = []
+        elif start_optionals is True:
             start_optionals = self.start_optionals
-        if type(start_optionals) == type("string"):
+        elif isinstance(start_optionals, str):
             start_optionals = [start_optionals]
-        if type(start_optionals) != type(["list"]):
-            print("! ERROR: start_optionals must be of type list!")
+        else:
+            raise TypeError("start_optionals must be of type list, str, or bool!")
 
         tmp = []
         for opt in start_optionals:
@@ -311,11 +305,16 @@ class __Simulation__(object):
                 )
                 return False
 
+        if self.started():
+            start_components = self.start_components
+        else:
+            start_components = []
+
         # check existance of self.start_components
-        for comp in self.start_components:
+        for comp in start_components:
             if not exists(join(self.datadir, comp)):
                 print(
-                    "! ERROR: Couldnt find component "
+                    "! ERROR: Couldnt find start_component "
                     + comp
                     + " from simulation "
                     + self.name
@@ -371,7 +370,7 @@ class __Simulation__(object):
                 debug_breakpoint()
             copyfile(f_path, copy_to)
 
-        for f in self.start_components + start_optionals:
+        for f in start_components + start_optionals:
             f_path = abspath(join(self.datadir, f))
             copy_to = abspath(join(path_newsim_data, f))
             if f_path == copy_to:
@@ -670,10 +669,9 @@ class __Simulation__(object):
             # restore self.tmp_dict
             self.tmp_dict = tmp_dict
         except Exception as e:
-            if rank == 0:
-                print("Warning: pencil.io.save failed. If dill is not installed, try:")
-                print("'pip3 install dill' (Python 3) or 'pip install dill' (Python 2).")
-                print(f"The raised error was: {e}")
+            pc_print("Warning: pencil.io.save failed. If dill is not installed, try:")
+            pc_print("'pip3 install dill' (Python 3) or 'pip install dill' (Python 2).")
+            pc_print(f"The raised error was: {e}")
 
     def started(self):
         """Returns whether simulation has already started.
@@ -683,8 +681,14 @@ class __Simulation__(object):
         return exists(join(self.path, "data", "time_series.dat"))
 
     def compile(
-        self, cleanall=True, fast=False, verbose=False, hostfile=None, bashrc=True
-    ):
+        self,
+        cleanall=False,
+        fast=False,
+        verbose=False,
+        hostfile=None,
+        autoclean=True,
+        **kwargs,
+        ):
         """Compiles the simulation. Per default the linking is done before the
         compiling process is called. This method will use your settings as
         defined in your .bashrc-file.
@@ -700,9 +704,10 @@ class __Simulation__(object):
         fast : bool
             Set True for fast compilation.
 
-        bashrc : bool
-            True: source bashrc in the subprocess
-            False: don't source bashrc in the subprocess. Instead, only pass along the environment variables from the current session.
+        autoclean : bool
+            If compilation fails, automatically set cleanall=True and retry.
+
+        Accepts all other keywords accepted by self.bash
         """
 
         from pencil import io
@@ -714,7 +719,7 @@ class __Simulation__(object):
         command.append("pc_build")
 
         if cleanall:
-            self.cleanall(verbose=verbose, hostfile=hostfile, bashrc=bashrc)
+            self.cleanall(verbose=verbose, hostfile=hostfile, **kwargs)
         if fast == True:
             command.append(" --fast")
         if hostfile:
@@ -722,18 +727,44 @@ class __Simulation__(object):
         if verbose != False:
             print(f"! Compiling {self.path}")
 
-        return self.bash(
-            command=" ".join(command),
-            verbose=verbose,
-            logfile=join(self.pc_dir, "compilelog_" + timestamp),
-            bashrc=bashrc,
-        )
+        try:
+            ret = self.bash(
+                command=" ".join(command),
+                verbose=verbose,
+                logfile=join(self.pc_dir, "compilelog_" + timestamp),
+                **kwargs,
+                )
+        except CommandFailedError:
+            if autoclean:
+                ret = None
+            else:
+                raise
+        finally:
+            if (ret is not True) and autoclean and (not cleanall):
+                #If cleanall was already passed, no point in cleaning again and retrying.
+                return self.compile(
+                    cleanall=True,
+                    autoclean=False, #prevent infinite recursion
+                    fast=fast,
+                    verbose=verbose,
+                    hostfile=hostfile,
+                    **kwargs,
+                    )
+            else:
+                return ret
 
-    def build(self, cleanall=True, fast=False, verbose=False):
+    def build(self, **kwargs):
         """Same as compile()"""
-        return self.compile(cleanall=cleanall, fast=fast, verbose=verbose)
+        return self.compile(**kwargs)
 
-    def bash(self, command, verbose="last100", logfile=False, bashrc=True):
+    def bash(
+        self,
+        command,
+        verbose="last100",
+        logfile=False,
+        bashrc=True,
+        raise_errors=False,
+        ):
         """Executes command in simulation directory.
         This method will use your settings as defined in your .bashrc-file.
         A log file will be produced within 'self.path/pc'-folder
@@ -751,6 +782,9 @@ class __Simulation__(object):
         bashrc : bool
             True: source bashrc in the subprocess
             False: don't source bashrc in the subprocess. Instead, only pass along the environment variables from the current session.
+        
+        raise_errors: bool
+            If True, a nonzero return code for command will be raised as a Python error.
         """
 
         import subprocess
@@ -799,15 +833,18 @@ class __Simulation__(object):
         if rc == 0:
             return True
         else:
-            print(
-                "! ERROR: Execution ended with error code "
-                + str(rc)
+            message = (
+                f"! ERROR: Execution ended with error code {rc}"
                 + "!\n! Please check log file in"
-            )
-            print("! " + logfile)
-            return rc
+                + f"\n! {logfile}"
+                )
+            if raise_errors:
+                raise CommandFailedError(message)
+            else:
+                print(message)
+                return rc
 
-    def cleanall(self, verbose=False, hostfile=None, bashrc=True):
+    def cleanall(self, verbose=False, hostfile=None, **kwargs):
         """Runs `pc_build --cleanall` in the simulation directory
 
         Parameters
@@ -815,9 +852,7 @@ class __Simulation__(object):
         verbose : bool
             Activate for verbosity.
 
-        bashrc : bool
-            True: source bashrc in the subprocess
-            False: don't source bashrc in the subprocess. Instead, only pass along the environment variables from the current session.
+        Accepts all other keywords accepted by self.bash
         """
 
         from pencil import io
@@ -838,8 +873,8 @@ class __Simulation__(object):
             command=" ".join(command),
             verbose=verbose,
             logfile=join(self.pc_dir, "cleanlog_" + timestamp),
-            bashrc=bashrc,
-        )
+            **kwargs,
+            )
 
     def clear_src(self, do_it=False, do_it_really=False):
         """This method clears the src directory of the simulation!
@@ -1129,7 +1164,7 @@ class __Simulation__(object):
             filename, quantity, newValue, sim=self, filepath=filepath, DEBUG=DEBUG
         )
 
-    def run(self, verbose=False, hostfile=None, bashrc=True, cleardata=False):
+    def run(self, verbose=False, hostfile=None, cleardata=False, **kwargs):
         """Runs the simulation.
 
         Parameters
@@ -1140,12 +1175,10 @@ class __Simulation__(object):
         hostfile : string
             Pencil config file to use
 
-        bashrc : bool
-            True: source bashrc in the subprocess
-            False: don't source bashrc in the subprocess. Instead, only pass along the environment variables from the current session.
-
         cleardata : bool
             Whether to clear existing data
+
+        Accepts all other keywords accepted by self.bash
         """
 
         from pencil import io
@@ -1180,5 +1213,5 @@ class __Simulation__(object):
             command=" ".join(command),
             verbose=verbose,
             logfile=join(self.pc_dir, "runlog_" + timestamp),
-            bashrc=bashrc,
-        )
+            **kwargs,
+            )

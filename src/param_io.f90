@@ -57,8 +57,9 @@ module Param_IO
   use TestPerturb
   use Testscalar
   use Timeavg
-  use Training
+  use Training, only: read_training_run_pars, write_training_run_pars
   use Viscosity
+  use GPU, only: read_gpu_run_pars, write_gpu_run_pars
 !
   implicit none
 !
@@ -95,7 +96,8 @@ module Param_IO
       lread_oldsnap_onlyA, lastaroth_output, astaroth_dest, &
       ireset_tstart, tstart, lghostfold_usebspline, &
       lread_aux, lwrite_aux, lkinflow_as_aux, lenforce_maux_check, &
-      lreport_undefined_diagnostics, pretend_lnTT, lprocz_slowest, nprocx_node, nprocy_node, nprocz_node, &
+      lreport_undefined_diagnostics, pretend_lnTT, lprocz_slowest, lmorton_curve, ltest_bcs, lsuppress_parallel_reductions, &
+      nprocx_node, nprocy_node, nprocz_node, &
       lcopysnapshots_exp, bcx, bcy, bcz, r_int, r_ext, r_ref, rsmooth, &
       r_int_border, r_ext_border, mu0, force_lower_bound, force_upper_bound, &
       lseparate_persist, ldistribute_persist, lpersist, lomit_add_data, &
@@ -119,7 +121,7 @@ module Param_IO
       TT_spec, ss_spec, cc_spec, cr_spec, mu_spec, sp_spec, ssp_spec, sssp_spec, &
       isaveglobal, lr_spec, r2u_spec, &
       np_spec, np_ap_spec, rhop_spec, &
-      r3u_spec, rhocc_pdf, cc_pdf, lncc_pdf, gcc_pdf, lngcc_pdf, &
+      r3u_spec, rhocc_pdf, cc_pdf, lncc_pdf, gcc_pdf, lngcc_pdf, cosEB_pdf, &
       xyz_step, xi_step_frac, xi_step_width, dxi_fact, trans_width, &
       lcylinder_in_a_box, lsphere_in_a_box, llocal_iso, init_loops, lwrite_2d, &
       lcylindrical_gravity, &
@@ -137,7 +139,7 @@ module Param_IO
       lnoghost_strati, ichannel1, ichannel2, tag_foreign, &
       lpoint, mpoint, npoint, lpoint2, mpoint2, npoint2, &
       lfatal_num_vector_369, density_scale_factor, &
-      lsmooth_farray,farray_smooth_width, radius_diag
+      lsmooth_farray,farray_smooth_width, radius_diag, lread_oldsnap_nocoolprof
 !
   namelist /run_pars/ &
       cvsid, ip, xyz0, xyz1, Lxyz, lperi, lpole, ncoarse, &
@@ -167,7 +169,7 @@ module Param_IO
       TT_spec, ss_spec, cc_spec, cr_spec, mu_spec, sp_spec, ssp_spec, sssp_spec, &
       isaveglobal, lr_spec, r2u_spec, &
       np_spec, np_ap_spec, rhop_spec, &
-      r3u_spec, rhocc_pdf, cc_pdf, lncc_pdf, gcc_pdf, lngcc_pdf, &
+      r3u_spec, rhocc_pdf, cc_pdf, lncc_pdf, gcc_pdf, lngcc_pdf, cosEB_pdf, &
       lnspecial_pdf, special_pdf, ang_jb_pdf1d, ang_ub_pdf1d, ang_ou_pdf1d, &
       kinflow, ladv_der_as_aux, lkinflow_as_aux, &
       ampl_kinflow_x, ampl_kinflow_y, ampl_kinflow_z, &
@@ -178,7 +180,7 @@ module Param_IO
       lread_oldsnap_lnrho2rho, lread_oldsnap_nomag, lread_oldsnap_notestflow, lread_oldsnap_nopscalar, &
       lread_oldsnap_notestfield, lread_oldsnap_notestscalar, lread_oldsnap_noshear, lrepair_snap, linterpol_on_repair, &
       lread_oldsnap_nohydro, lread_oldsnap_nohydro_efield, lread_oldsnap_nohydro_ekfield, &
-      lread_oldsnap_noisothmhd, lread_oldsnap_onlyA, lastaroth_output, astaroth_dest, &
+      lread_oldsnap_noisothmhd, lread_oldsnap_onlyA, lastaroth_output, astaroth_dest, lbackup_snap, &
       lread_oldsnap_rho2lnrho, lread_oldsnap_nosink, lwrite_dim_again, lwrite_last_powersnap, &
       lread_aux, comment_char, ix, iy, iy2, iz, iz2, iz3, iz4, slice_position, &
       xbot_slice, xtop_slice, ybot_slice, ytop_slice, zbot_slice, ztop_slice, &
@@ -209,7 +211,7 @@ module Param_IO
       eps_stiff, timestep_scaling, lequatory, lequatorz, zequator, &
       lini_t_eq_zero, lini_t_eq_zero_once, &
       lav_smallx, xav_max, ldt_paronly, lweno_transport, &
-      it_timing, har_spec, hav_spec, j_spec, jb_spec, ja_spec, b2_spec, &
+      it_timing, ltiming_io, har_spec, hav_spec, j_spec, jb_spec, ja_spec, b2_spec, &
       lread_less, lread_nogrid, lformat, ltec, lread_global, &
       llsode, lsplit_second, nu_sts, permute_sts, lfargo_advection, &
       ldynamical_diffusion, ldyndiff_useumax, re_mesh, lghostfold_usebspline, &
@@ -228,7 +230,9 @@ module Param_IO
       saffman_ub, saffman_mag, saffman_mag_c, saffman_aa, saffman_aa_c, saffman_bb, &
       uu_fft3d, oo_fft3d, bb_fft3d, jj_fft3d, uu_xkyz, oo_xkyz, bb_xkyz, jj_xkyz, &
       uu_kx0z, oo_kx0z, bb_kx0z, jj_kx0z, bb_k00z, ee_k00z, gwT_fft3d, &
-      Em_specflux, Hm_specflux, Hc_specflux, density_scale_factor, radius_diag
+      Em_specflux, Hm_specflux, Hc_specflux, density_scale_factor, radius_diag, &
+      lmorton_curve, lsuppress_parallel_reductions, &
+      shared_mem_name, lupdate_cvs, lread_oldsnap_nocoolprof
 !
   namelist /IO_pars/ &
       lcollective_IO, IO_strategy
@@ -442,7 +446,8 @@ module Param_IO
 !
 !AB: putting it to impossible is not correct; it should be inherited from the previous run.
 !AB: enabled again...
-      tstart=impossible
+!FAG: this has default 0 in cdata and can be redefined in start_pars and/or run_pars
+    tstart=impossible
 !
 !  Open namelist file.
 !
@@ -618,6 +623,7 @@ module Param_IO
         call read_namelist(read_python_run_pars         ,'python'            ,lpython)
         call read_namelist(read_implicit_diff_run_pars  ,'implicit_diffusion',limplicit_diffusion)
         call read_namelist(read_training_run_pars       ,'training'          ,ltraining)
+        call read_namelist(read_gpu_run_pars            ,'gpu'               ,lgpu)
 !
         call read_all_particles_run_pars
 !
@@ -797,6 +803,7 @@ module Param_IO
 !  19-aug-15/PABourdin: renamed from 'print_startpars' to 'write_all_init_pars'
 !
       use Particles_main, only: write_all_particles_init_pars
+      use Syscalls, only: system_cmd
 !
       character (len=*), optional, intent(in) :: file
 !
@@ -871,7 +878,14 @@ module Param_IO
 !
         if (lidl_output) call write_IDL_logicals(unit)
 !
-        if (present(file)) close(unit)
+        if (present(file)) then
+          close(unit)
+!
+!  This is to have one item per line in the file param.nml (Cray compiler denies it).
+!
+          call system_cmd( &
+          "sed -i -e's/\(&[a-zA-Z0-9_]*\) \( *[^ ].*\)/\1\n\2/' -e's/,\([^,]*=\)/,\n\1/g' data/param.nml >& /dev/null")
+        endif
       endif
 !
     endsubroutine write_all_init_pars
@@ -977,12 +991,21 @@ module Param_IO
           call write_pointmasses_run_pars(unit)
           call write_python_run_pars(unit)
           call write_implicit_diff_run_pars(unit)
+          call write_training_run_pars(unit)
+          call write_gpu_run_pars(unit)
 !
           call write_all_particles_run_pars(unit)
 !
           write(unit,NML=IO_pars)
 
-          if (unit /= 6) close(unit)
+          if (unit /= 6) then
+            close(unit)
+!
+!  This is to have one item per line in the file param2.nml (Cray compiler denies it).
+!
+            call system_cmd( &
+            "sed -i -e's/\(&[a-zA-Z0-9_]*\) \( *[^ ].*\)/\1\n\2/' -e's/,\([^,]*=\)/,\n\1/g' data/param2.nml >& /dev/null")
+          endif
 
         else                                    ! output in params.log, stdout or other file
           ! Add separator, comment, and time.

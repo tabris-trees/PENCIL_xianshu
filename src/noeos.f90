@@ -180,6 +180,8 @@ module EquationOfState
 ! AXEL: yes, but magnetic has a problematic line
 ! AXEL: "if (ltemperature) lpenc_requested(i_cv1)=.true."
 !
+      if (lpenc_loc(i_cv)) p%cv=0.0
+      if (lpenc_loc(i_cp)) p%cp=0.0
       if (lpenc_loc(i_cv1)) p%cv1=0.0
       if (lpenc_loc(i_cp1)) p%cp1=0.0
       if (lpenc_loc(i_cs2)) p%cs2=cs20
@@ -622,6 +624,10 @@ module EquationOfState
         call fatal_error('bc_ss_flux','invalid argument')
       endselect
 !
+!AXEL: not needed for noeos. Can remove if auto-test ok.
+!KG: restored since this subroutine is used other EOS modules (even
+!KG: eos_idealgas) through the eos_dummies.inc mechanism. Commenting this out
+!KG: breaks most of the convection auto-tests (e.g. conv-slab)
       do il=1,mx
         do im =1,my
           call get_gamma_etc(cp=cp(il,im), cv=cv(il,im), f=f(il,im,n,:))

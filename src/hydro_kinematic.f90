@@ -22,6 +22,7 @@
 ! PENCILS PROVIDED uu_advec(3); uuadvec_guu(3)
 ! PENCILS PROVIDED lorentz_gamma2; lorentz_gamma; ss_rel2; ss_rel(3)
 ! PENCILS PROVIDED ss_rel_ij(3,3); ss_rel_factor; divss_rel
+! PENCILS PROVIDED lorentz; hless
 !***********************************************************************
 module Hydro
 !
@@ -72,7 +73,7 @@ module Hydro
   logical :: lwrite_random_location=.false., lwrite_random_wavenumber=.false.
   logical :: lrandom_wavenumber=.false., lwrite_random_ampl=.false.
   integer :: ll_sh=0, mm_sh=0, n_xprof=-1
-  integer :: pushpars2c, pushdiags2c  ! should be procedure pointer (F2003)
+  integer :: pushpars2c  ! should be procedure pointer (F2003)
 !
 !  init parameters
 !  (none)
@@ -100,7 +101,7 @@ module Hydro
   real :: sigma_uukin=1., tau_uukin=1., time_uukin=1., sigma1_uukin_scl_yz=1.
   real :: binary_radius=0., radius_kinflow=0., width_kinflow=0.
   real :: power1_kinflow=4., power2_kinflow=-5./3., kgaussian_uu=0., kpeak_kinflow=3., cutoff=1e9
-  real :: cs21_kinflow=1.
+  real :: cs21_kinflow=1., alpha_damping=1.
   real :: diff_rot_a2=0., diff_rot_a4=0.
   integer :: kinflow_ck_ell=0, tree_lmax=8, kappa_kinflow=100, smooth_width=0   !nghost
   character (len=labellen) :: wind_profile='none'
@@ -134,7 +135,7 @@ module Hydro
       sigma_uukin, tau_uukin, time_uukin, sigma1_uukin_scl_yz, &
       binary_radius, radius_kinflow, width_kinflow, &
       power1_kinflow, power2_kinflow, kpeak_kinflow, &
-      cs21_kinflow, diff_rot_a2, diff_rot_a4, &
+      cs21_kinflow, diff_rot_a2, diff_rot_a4, alpha_damping, &
       ltime_old_kinflow
 !
   integer :: idiag_u2m=0,idiag_um2=0,idiag_oum=0,idiag_o2m=0
@@ -177,6 +178,7 @@ module Hydro
 !
 !   6-nov-01/wolf: coded
 !
+      use FArrayManager
       use Mpicomm, only: lroot
       use SharedVariables, only: put_shared_variable
 !
@@ -187,17 +189,16 @@ module Hydro
 !
       call put_shared_variable('lpressuregradient_gas',lpressuregradient_gas,caller='register_hydro')
 !
-   !AB: not sure why this doesn't work
-   !  if (lkinflow_as_aux.or.lkinflow_as_comaux) then
-   !    if (lkinflow_as_comaux) then
-   !      call farray_register_auxiliary('uu',iuu,vector=3,communicated=.true.)
-   !    else
-   !      call farray_register_auxiliary('uu',iuu,vector=3)
-   !    endif
-   !    iux=iuu
-   !    iuy=iuu+1
-   !    iuz=iuu+2
-   !  endif
+      if (lkinflow_as_aux.or.lkinflow_as_comaux) then
+        if (lkinflow_as_comaux) then
+          call farray_register_auxiliary('uu',iuu,vector=3,communicated=.true.)
+        else
+          call farray_register_auxiliary('uu',iuu,vector=3)
+        endif
+        iux=iuu
+        iuy=iuu+1
+        iuz=iuu+2
+      endif
 !
       kinflow=kinematic_flow
 
@@ -297,15 +298,16 @@ module Hydro
 !  arrays are already allocated and must not be allocated again.
 !
       if (lkinflow_as_aux.or.lkinflow_as_comaux) then
-        if (iuu==0) then
-          if (lkinflow_as_comaux) then
-            call farray_register_auxiliary('uu',iuu,vector=3,communicated=.true.)
-          else
-            call farray_register_auxiliary('uu',iuu,vector=3)
-          endif
-          iux=iuu
-          iuy=iuu+1
-          iuz=iuu+2
+   !    if (iuu==0) then
+        if (iuu/=0) then
+   !      if (lkinflow_as_comaux) then
+   !        call farray_register_auxiliary('uu',iuu,vector=3,communicated=.true.)
+   !      else
+   !        call farray_register_auxiliary('uu',iuu,vector=3)
+   !      endif
+   !      iux=iuu
+   !      iuy=iuu+1
+   !      iuz=iuu+2
 !
 !  Possibility to read uu.dat, but currently only for one processor.
 !  However, this can be useful when a periodic kinematic flow is to
@@ -568,6 +570,8 @@ module Hydro
       if (kinematic_flow=='eddy') then
         lpenc_requested(i_rcyl_mn)=.true.
         lpenc_requested(i_rcyl_mn1)=.true.
+      elseif (kinematic_flow=='Lorentz-force') then
+        lpenc_requested(i_jxbr)=.true.
       endif
 !
 !  Diagnostic pencils.
@@ -607,6 +611,13 @@ module Hydro
         lpencil_in(i_glnrho)=.true.
       endif
       if (lpencil_in(i_u2)) lpencil_in(i_uu)=.true.
+! oxu2
+      if (lpencil_in(i_oxu2)) lpencil_in(i_oxu)=.true.
+! oxu
+      if (lpencil_in(i_oxu)) then
+        lpencil_in(i_uu)=.true.
+        lpencil_in(i_oo)=.true.
+      endif
 ! oo
       if (lpencil_in(i_ou)) then
         lpencil_in(i_uu)=.true.
@@ -621,6 +632,22 @@ module Hydro
       endif
 !
     endsubroutine pencil_interdep_hydro
+!***********************************************************************
+    logical function get_lupdate_aux()
+
+      get_lupdate_aux = .true.
+      select case (kinematic_flow)
+        case ('from-snap','from-foreign-snap')
+          get_lupdate_aux = .false.
+        case('from_aux')
+          get_lupdate_aux = .false.
+        case('spher-harm-poloidal')
+          get_lupdate_aux = .false.
+        case('spher-harm-poloidal-per')
+          get_lupdate_aux = .false.
+      end select 
+
+    endfunction get_lupdate_aux
 !***********************************************************************
     subroutine calc_pencils_hydro_std(f,p)
 !
@@ -673,7 +700,7 @@ module Hydro
 !      real :: random_r_pt, random_p_pt
       real :: fac, fac2, argy, argz, cxt, cyt, czt, omt, del
       real :: fpara, dfpara, ecost, esint, epst, sin2t, cos2t
-      real :: sqrt2, sqrt21k1, eps1=1., WW=0.25, k21
+      real :: sqrt2, sqrt21k1, eps1, WW, k21
       real :: Balpha, ABC_A1, ABC_B1, ABC_C1
       real :: coef_mu, coef_eta2, coef_aa, coef_bb
       real :: ro
@@ -685,8 +712,7 @@ module Hydro
 !  Choose from a list of different flow profiles.
 !  Begin with a
 !
-      lupdate_aux=.true.
-!
+      eps1=1.
       select case (kinematic_flow)
 !
 !constant flow in the x direction.
@@ -807,6 +833,8 @@ module Hydro
           p%uij(:,3,2)=sqrt2*ky_uukin*sin(kx_uukin*x(l1:l2))*cos(ky_uukin*y(m))
           p%uij(:,3,3)=+0.
         endif
+! oo (=curlu)
+        if (lpenc_loc(i_oo)) call curl_mn(p%uij,p%oo,p%uu)
 !
       case ('roberts-xz')
         if (headtt) print*,'Glen Roberts flow w.r.t. x and z; kx_uukin,kz_uukin=',kx_uukin,kz_uukin
@@ -2082,6 +2110,24 @@ module Hydro
 !
 !  U_phi = sin(theta)
 !
+      case ('Uy=sinx')
+        if (headtt) print*,'Uy = sin(x), ampl=',ampl_kinflow
+! uu
+        if (lpenc_loc(i_uu)) then
+          p%uu(:,1)=0.
+          p%uu(:,2)=ampl_kinflow*sin(x(l1:l2))
+          p%uu(:,3)=0.
+        endif
+! divu
+        if (lpenc_loc(i_divu)) p%divu=0.
+! uij
+        if (lpenc_loc(i_uij)) then
+          p%uij(:,:,:)=0.
+          p%uij(:,2,1)=+ampl_kinflow*cos(x(l1:l2))
+        endif
+!
+!  U_phi = sin(theta)
+!
       case ('Uz=siny')
         if (headtt) print*,'U_phi = sin(theta)',ampl_kinflow
 ! uu
@@ -2503,7 +2549,6 @@ module Hydro
         else
           call inevitably_fatal_error('hydro_kinematic', '"from-[foreign-]snap" requires lkinflow_as_aux=T')
         endif
-        lupdate_aux=.false.
 !
       case ('Jouve-2008-benchmark-noav')
         if (lpenc_loc(i_uu)) then
@@ -2528,15 +2573,17 @@ module Hydro
 !
       case('from_aux')
         if (lpenc_loc(i_uu)) p%uu=ampl_kinflow*f(l1:l2,m,n,iux:iuz)
-        lupdate_aux=.false.
       case('spher-harm-poloidal')
         if (lpenc_loc(i_uu)) p%uu=f(l1:l2,m,n,iux:iuz)
-        lupdate_aux=.false.
       case('spher-harm-poloidal-per')
         if (lpenc_loc(i_uu)) p%uu=f(l1:l2,m,n,iux:iuz)*cos(omega_kinflow*t)
-        lupdate_aux=.false.
       case('sound3D')
         if (lpenc_loc(i_uu)) p%uu=f(l1:l2,m,n,iux:iuz)
+      case('Lorentz-force')
+        if (lpenc_loc(i_uu)) then
+          if (lpenc_loc(i_uu)) p%uu=f(l1:l2,m,n,iux:iuz)
+          !if (alpha_damping/=0) p%uu=p%jxbr/alpha_damping
+        endif
       case default
         call inevitably_fatal_error('hydro_kinematic', 'kinematic_flow not found')
       end select
@@ -2648,6 +2695,7 @@ module Hydro
 !
       real :: fac
       real, save :: t_foreign=0.
+      integer :: j
 !
 !  Do global, time-dependent flow calculations here:
 !
@@ -2672,8 +2720,15 @@ module Hydro
 !print*, 'PENCIL FMAX' , iproc, maxval(abs(f(:,:,:,iux:iuz)))
 !
       elseif (kinematic_flow=='sound3D') then
-!AB: to add parameter
         call sound3D(f)
+!
+!  Use the Lorentz force in the strong damping approximation.
+!
+      elseif (kinematic_flow=='Lorentz-force') then
+        do j=1,3
+          f(:,:,:,iux-1+j)=f(:,:,:,ijxbx-1+j)*exp(-f(:,:,:,ilnrho))/alpha_damping
+        enddo
+!
       elseif (kinematic_flow=='Galloway-Proctor-RandomTemporalPhase'.or. &
               kinematic_flow=='Galloway-Proctor-RandomPhase') then
         if (t>tphase_kinflow) then
@@ -2720,7 +2775,7 @@ module Hydro
 !  uu/dx for timestep (if kinematic_flow is set)
 !
       if (kinematic_flow/='none') then
-        if (lfirst.and.ldt) then
+        if (lupdate_courant_dt) then
           advec_uu=sum(abs(p%uu)*dline_1,2)
           maxadvec=maxadvec+advec_uu
           if (headtt.or.ldebug) print*, 'duu_dt: max(advec_uu) =', maxval(advec_uu)
@@ -2732,7 +2787,7 @@ module Hydro
 !  know we are?
 !  Changed lkinflow_as_aux -> (lkinflow_as_aux.or.lkinflow_as_comaux)
 !
-     if (lpencil(i_uu).and.lkinflow_as_aux.and.(lupdate_aux.or.lfirst_aux)) f(l1:l2,m,n,iux:iuz)=p%uu
+     if (lpencil(i_uu).and.lkinflow_as_aux.and.(get_lupdate_aux().or.lfirst_aux)) f(l1:l2,m,n,iux:iuz)=p%uu
      !if (lpencil(i_uu).and.(lkinflow_as_aux.or.lkinflow_as_comaux).and. &
      !    (lupdate_aux.or.lfirst_aux)) f(l1:l2,m,n,iux:iuz)=p%uu
      if (.not.lpencil_check_at_work) lfirst_aux=.false.

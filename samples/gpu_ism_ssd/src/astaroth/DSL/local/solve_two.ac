@@ -1,0 +1,157 @@
+#include "../prerequisites.h"
+
+auxiliary Field3 BETA_UU
+auxiliary Field3 BETA_AA
+auxiliary Field  BETA_RHO
+auxiliary Field  BETA_SS
+
+auxiliary Field3 ERROR_UU
+auxiliary Field3 ERROR_AA
+auxiliary Field  ERROR_RHO
+auxiliary Field  ERROR_SS
+
+output real uux_initial_max
+output real uuy_initial_max
+output real uuz_initial_max
+       
+output real aax_initial_max
+output real aay_initial_max
+output real aaz_initial_max
+
+output real rho_initial_max
+output real ss_initial_max
+//TP: tested to work on 10-apr-2025
+Kernel twopass_solve_intermediate(PC_SUB_STEP_NUMBER step_num, real dt) {
+  df_uu  = duu_dt(step_num)
+  df_aa  = daa_dt(step_num)
+  df_rho = drho_dt(step_num)
+  df_ss  = denergy_dt(step_num)
+
+  uu_error  = rkf4_error(df_uu  ,step_num,dt)
+  aa_error  = rkf4_error(df_aa  ,step_num,dt)
+  rho_error = rkf4_error(df_rho ,step_num,dt)
+  ss_error  = rkf4_error(df_ss  ,step_num,dt)
+ 
+  maximum_error = 0.0
+  //TP: nothing to cumulate for the first substep
+  if(step_num!=0)
+  {
+        uu_error  += ERROR_UU
+        aa_error  += ERROR_AA
+        rho_error += ERROR_RHO
+        ss_error  += ERROR_SS
+  }
+  //TP: done since e.g. UU stores now the initial state which beta update should read from
+  //For subsequent steps it should read from itself
+  //Last step is skipped since we want the beta version to finally end up in the 'proper' registers
+  if(step_num == 0)
+  {
+        write(BETA_UU ,rkf4_beta(UU ,df_uu ,step_num,dt))
+        write(BETA_AA ,rkf4_beta(AA ,df_aa ,step_num,dt))
+        write(BETA_RHO,rkf4_beta(RHO,df_rho,step_num,dt))
+        write(BETA_SS ,rkf4_beta(SS ,df_ss ,step_num,dt))
+
+	//TP: not needed if one directly uses dt_epsi
+	reduce_max(max(AC_dt_ratio*abs(UU.x),AC_dt_epsi), uux_initial_max)
+	reduce_max(max(AC_dt_ratio*abs(UU.y),AC_dt_epsi), uuy_initial_max)
+	reduce_max(max(AC_dt_ratio*abs(UU.z),AC_dt_epsi), uuz_initial_max)
+
+	reduce_max(max(AC_dt_ratio*abs(AA.x),AC_dt_epsi), aax_initial_max)
+	reduce_max(max(AC_dt_ratio*abs(AA.y),AC_dt_epsi), aay_initial_max)
+	reduce_max(max(AC_dt_ratio*abs(AA.z),AC_dt_epsi), aaz_initial_max)
+
+	reduce_max(max(AC_dt_ratio*abs(RHO),AC_dt_epsi), rho_initial_max)
+	reduce_max(max(AC_dt_ratio*abs(SS),AC_dt_epsi),  ss_initial_max)
+  }
+  else if(step_num != 4)
+  {
+        write(BETA_UU ,rkf4_beta(BETA_UU ,df_uu ,step_num,dt))
+        write(BETA_AA ,rkf4_beta(BETA_AA ,df_aa ,step_num,dt))
+        write(BETA_RHO,rkf4_beta(BETA_RHO,df_rho,step_num,dt))
+        write(BETA_SS ,rkf4_beta(BETA_SS ,df_ss ,step_num,dt))
+  }
+  //Until the last step the 'proper' registers hold the alpha updates
+  //Except in the last one we overwrite them with the beta update
+  //No need to write the error out for the last substep
+  if(step_num != 4)
+  {
+        write(UU ,rkf4_alpha(UU ,df_uu ,step_num,dt))
+        write(AA ,rkf4_alpha(AA ,df_aa ,step_num,dt))
+        write(RHO,rkf4_alpha(RHO,df_rho,step_num,dt))
+        write(SS ,rkf4_alpha(SS ,df_ss ,step_num,dt))
+
+        write(ERROR_UU, uu_error)
+        write(ERROR_AA, aa_error)
+        write(ERROR_RHO,rho_error)
+        write(ERROR_SS, ss_error)
+  }
+  else
+  {
+        uu_final  = rkf4_beta(BETA_UU ,df_uu ,step_num,dt)
+        aa_final  = rkf4_beta(BETA_AA ,df_aa ,step_num,dt)
+        rho_final = rkf4_beta(BETA_RHO,df_rho,step_num,dt)
+        ss_final  = rkf4_beta(BETA_SS ,df_ss ,step_num,dt)
+
+	write(UU ,uu_final)
+	write(AA ,aa_final)
+	write(RHO,rho_final)
+	write(SS ,ss_final)
+	
+	//TP: using dt_epsi instead of the initial maximums give the same answer on a small test problem
+        //TP: but for completeness have the other scheme here
+        real scal = max(abs(uu_final.x),uux_initial_max)
+        maximum_error = max(abs(uu_error.x/scal),maximum_error)
+        scal = max(abs(uu_final.y),uuy_initial_max)
+        maximum_error = max(abs(uu_error.y/scal),maximum_error)
+        scal = max(abs(uu_final.z),uuz_initial_max)
+        maximum_error = max(abs(uu_error.z/scal),maximum_error)
+        scal = max(abs(aa_final.x),aax_initial_max)
+        maximum_error = max(abs(aa_error.x/scal),maximum_error)
+        scal = max(abs(aa_final.y),aay_initial_max)
+        maximum_error = max(abs(aa_error.y/scal),maximum_error)
+        scal = max(abs(aa_final.z),aaz_initial_max)
+        maximum_error = max(abs(aa_error.z/scal),maximum_error)
+        scal = max(abs(rho_final),rho_initial_max)
+        maximum_error = max(abs(rho_error/scal),maximum_error)
+        scal = max(abs(ss_final),ss_initial_max)
+        maximum_error = max(abs(ss_error/scal),maximum_error)
+  	reduce_max(maximum_error,AC_maximum_error)
+	/**
+        scal = max(abs(uu_final.x),AC_dt_epsi)
+        maximum_error = max(abs(uu_error.x/scal),maximum_error)
+        scal = max(abs(uu_final.y),AC_dt_epsi)
+        maximum_error = max(abs(uu_error.y/scal),maximum_error)
+        scal = max(abs(uu_final.z),AC_dt_epsi)
+        maximum_error = max(abs(uu_error.z/scal),maximum_error)
+        scal = max(abs(aa_final.x),AC_dt_epsi)
+        maximum_error = max(abs(aa_error.x/scal),maximum_error)
+        scal = max(abs(aa_final.y),AC_dt_epsi)
+        maximum_error = max(abs(aa_error.y/scal),maximum_error)
+        scal = max(abs(aa_final.z),AC_dt_epsi)
+        maximum_error = max(abs(aa_error.z/scal),maximum_error)
+        scal = max(abs(rho_final),AC_dt_epsi)
+        maximum_error = max(abs(rho_error/scal),maximum_error)
+        scal = max(abs(ss_final),AC_dt_epsi)
+        maximum_error = max(abs(ss_error/scal),maximum_error)
+  	reduce_max(maximum_error,AC_maximum_error)
+	**/
+  } 
+}
+
+//Kernel twopass_solve_intermediate(PC_SUB_STEP_NUMBER step_num, real dt) {
+//  write( UU, rk3_intermediate(previous(UU),  duu_dt(step_num), step_num, dt) )
+//  write( RHO, rk3_intermediate(previous(RHO),  drho_dt(step_num), step_num, dt) )
+//  write( SS, rk3_intermediate(previous(SS),  denergy_dt(step_num), step_num, dt) )
+//  write( AA, rk3_intermediate(previous(AA),  daa_dt(step_num), step_num, dt) )
+//}
+
+fixed_boundary Kernel twopass_solve_final(int step_num){
+  if(lcourant_dt)
+  {
+  	write( UU, rk3_final(previous(UU), value(UU), step_num) )
+  	write( RHO, rk3_final(previous(RHO), value(RHO), step_num) )
+  	write( SS, rk3_final(previous(SS), value(SS), step_num) )
+  	write( AA, rk3_final(previous(AA), value(AA), step_num) ) 
+  }
+}
+#include "steps_two.h"

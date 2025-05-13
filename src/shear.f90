@@ -267,7 +267,7 @@ module Shear
 !
 !  Take shear into account for calculating time step.
 !
-      if (lfirst .and. ldt .and. (lhydro .or. ldensity) .and. &
+      if (lupdate_courant_dt .and. (lhydro .or. ldensity) .and. &
           nygrid > 1 .and. .not. lshearadvection_as_shift) then
         p%advec_shear = abs(uy0 * dy_1(m))
         maxadvec=maxadvec+p%advec_shear
@@ -334,7 +334,7 @@ module Shear
           call der6(f, j, penc, 1, ignoredx=.true.)
           df(l1:l2,m,n,j) = df(l1:l2,m,n,j) + d * penc
         enddo comp1
-        if (lfirst .and. ldt) then
+        if (lupdate_courant_dt) then
           diffus_shear3 = d
           maxdiffus3=max(maxdiffus3,diffus_shear3)
         endif
@@ -1005,7 +1005,8 @@ module Shear
 !  19-sep-14/ccyang: coded.
 !
       use Mpicomm, only: mpirecv_real, mpisend_real, mpibarrier
-      use Cparam, only: l1i, l2i
+      use Cparam, only: l1i
+      use Cdata, only: l2i
 !
       real, dimension(:,:,:,:), intent(inout) :: a
       integer, intent(in) :: ivar1, ivar2
@@ -1075,4 +1076,26 @@ module Shear
 !
     endsubroutine shear_frame_transform
 !***********************************************************************
+   subroutine pushpars2c(p_par)
+
+    use Syscalls, only: copy_addr
+    use General , only: string_to_enum
+
+    integer, parameter :: n_pars=200
+    integer(KIND=ikind8), dimension(n_pars) :: p_par
+
+     call copy_addr(sini,p_par(1))
+     call copy_addr(sshear1,p_par(2))
+     call copy_addr(sshear_sini,p_par(3))
+     call copy_addr(diff_hyper3x_mesh,p_par(4))
+     call copy_addr(lshearadvection_as_shift,p_par(5)) ! bool
+     call copy_addr(lshear_acceleration,p_par(6)) ! bool
+     call copy_addr(lmagnetic_stretching,p_par(7)) ! bool
+     call copy_addr(lmagnetic_tilt,p_par(8)) ! bool
+     call copy_addr(lhyper3x_mesh,p_par(9)) ! bool
+     call copy_addr(uy0,p_par(10)) ! (nx)
+
+   endsubroutine pushpars2c
+!***********************************************************************
+
 endmodule Shear

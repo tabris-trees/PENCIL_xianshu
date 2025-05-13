@@ -55,8 +55,6 @@ module Gravity
       if (lroot) call svn_id( &
           "$Id$")
 !
-      lgravz = .false.
-      lgravr = .false.
 !
     endsubroutine register_gravity
 !***********************************************************************
@@ -68,6 +66,8 @@ module Gravity
 !
       real, dimension(mx,my,mz,mfarray) :: f
 !
+      lgravz = .false.
+      lgravr = .false.
       call keep_compiler_quiet(f)
 !
     endsubroutine initialize_gravity
@@ -376,5 +376,17 @@ module Gravity
       is_constant_zgrav=.true.
  
     endfunction is_constant_zgrav
+!***********************************************************************
+    subroutine pushpars2c(p_par)
+
+    use Syscalls, only: copy_addr
+
+    integer, parameter :: n_pars=10
+    integer(KIND=ikind8), dimension(n_pars) :: p_par
+
+    call copy_addr(zgrav,p_par(1))
+    call copy_addr(gravz,p_par(2))
+
+    endsubroutine pushpars2c
 !***********************************************************************
 endmodule Gravity

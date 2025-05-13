@@ -44,6 +44,9 @@ module Timestep
 
       if (dt0 < 0.) dt = 0
       ldt = (dt==0.)
+      lcourant_dt = .true.
+
+      num_substeps = itorder
 
     endsubroutine initialize_timestep
 !***********************************************************************
@@ -108,7 +111,7 @@ module Timestep
 !
 !  Set up particle derivative array.
 !
-        if (lparticles) call particles_timestep_first(f)
+        if (lparticles) call particles_timestep_first(f,df)
 !
 !  Change df according to the chosen physics modules.
 !

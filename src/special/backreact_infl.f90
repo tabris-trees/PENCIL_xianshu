@@ -32,7 +32,7 @@
 !    NOT IMPLEMENTED FULLY YET - HOOKS NOT PLACED INTO THE PENCIL-CODE
 !
 !** AUTOMATIC CPARAM.INC GENERATION ****************************
-! Declare (for generation of backreact_infl_dummies.inc) the number of f array
+! Declare (for generation of special_dummies.inc) the number of f array
 ! variables and auxiliary variables added by this module
 !
 ! CPARAM logical, parameter :: lspecial = .true.
@@ -72,7 +72,7 @@
 ! Where geo_kws it replaced by the filename of your new module
 ! upto and not including the .f90
 !
-module backreact_infl
+module Special
 !
   use Cdata
   use General, only: keep_compiler_quiet
@@ -90,43 +90,50 @@ module backreact_infl
   integer :: iinfl_rho_chi=0
   real :: ncutoff_phi=1., infl_v=.1
   real :: axionmass=1.06e-6, axionmass2, ascale_ini=1.
-  real :: phi0=.44, dphi0=-1e-5, c_light_axion=1., lambda_axion=0., eps=.01
+  real :: phi0=.44, dphi0=-1.69e-7, c_light_axion=1., lambda_axion=0., eps=.01
   real :: amplphi=.1, ampldphi=.0, kx_phi=1., ky_phi=0., kz_phi=0., phase_phi=0., width=.1, offset=0.
   real :: initpower_phi=0.,  cutoff_phi=0.,  initpower2_phi=0.
   real :: initpower_dphi=0., cutoff_dphi=0., initpower2_dphi=0.
   real :: kgaussian_phi=0.,kpeak_phi=0., kgaussian_dphi=0., kpeak_dphi=0.
   real :: relhel_phi=0.
   real :: ddotam, a2rhopm, a2rhopm_all, a2rhom, a2rhom_all
-  real :: edotbm, edotbm_all, e2m, e2m_all, a2rhophim, a2rhophim_all
+  real :: edotbm, edotbm_all, e2m, e2m_all, b2m, b2m_all, a2rhophim, a2rhophim_all
+  real :: sigE1m, sigB1m, sigE1m_all, sigB1m_all, sigEm_all, sigBm_all
   real :: a2rhogphim, a2rhogphim_all
-  real :: lnascale, ascale, a2, a21, Hscript
-  real :: Hscript0=0.
+  real :: lnascale, a2, a21, Hscript
+  real :: Hscript0=0., scale_rho_chi_Heqn=1.
+  real :: echarge=.0, echarge_const=.303
+  real :: count_eb0_all=0.
   real, target :: ddotam_all
   real, pointer :: alpf
+  real, pointer :: sigE_prefactor, sigB_prefactor
+! real, dimension (:), pointer :: eta_xtdep
   real, dimension (nx) :: dt1_special
   logical :: lbackreact_infl=.true., lem_backreact=.true., lzeroHubble=.false.
   logical :: lscale_tobox=.true.,ldt_backreact_infl=.true., lconf_time=.true.
   logical :: lskip_projection_phi=.false., lvectorpotential=.false., lflrw=.false.
   logical :: lrho_chi=.false., lno_noise_phi=.false., lno_noise_dphi=.false.
-  logical, pointer :: lphi_hom
+  logical, pointer :: lphi_hom, lnoncollinear_EB, lnoncollinear_EB_aver
+  logical, pointer :: lcollinear_EB, lcollinear_EB_aver
 !
   character (len=labellen) :: Vprime_choice='quadratic', Hscript_choice='default'
   character (len=labellen), dimension(ninit) :: initspecial='nothing'
+  character (len=50) :: echarge_type='const'
 !
-  namelist /backreact_infl_init_pars/ &
+  namelist /special_init_pars/ &
       initspecial, phi0, dphi0, axionmass, eps, ascale_ini, &
       c_light_axion, lambda_axion, amplphi, ampldphi, lno_noise_phi, lno_noise_dphi, &
       kx_phi, ky_phi, kz_phi, phase_phi, width, offset, &
       initpower_phi, initpower2_phi, cutoff_phi, kgaussian_phi, kpeak_phi, &
       initpower_dphi, initpower2_dphi, cutoff_dphi, kpeak_dphi, &
       ncutoff_phi, lscale_tobox, Hscript0, Hscript_choice, infl_v, lflrw, &
-      lrho_chi
+      lrho_chi, scale_rho_chi_Heqn
 !
-  namelist /backreact_infl_run_pars/ &
+  namelist /special_run_pars/ &
       initspecial, phi0, dphi0, axionmass, eps, ascale_ini, &
       lbackreact_infl, lem_backreact, c_light_axion, lambda_axion, Vprime_choice, &
       lzeroHubble, ldt_backreact_infl, Ndiv, Hscript0, Hscript_choice, infl_v, &
-      lflrw, lrho_chi
+      lflrw, lrho_chi, scale_rho_chi_Heqn, echarge_type
 !
 ! Diagnostic variables (needs to be consistent with reset list below).
 !
@@ -140,9 +147,13 @@ module backreact_infl
   integer :: idiag_lnam=0      ! DIAG_DOC: $\left<\ln a\right>$
   integer :: idiag_ddotam=0    ! DIAG_DOC: $a''/a$
   integer :: idiag_a2rhopm=0   ! DIAG_DOC: $a^2 (rho+p)$
-  integer :: idiag_a2rhom=0   ! DIAG_DOC: $a^2 rho$
-  integer :: idiag_a2rhophim=0   ! DIAG_DOC: $a^2 rho$
-  integer :: idiag_a2rhogphim=0   ! DIAG_DOC: $0.5 <grad phi^2>$
+  integer :: idiag_a2rhom=0    ! DIAG_DOC: $a^2 rho$
+  integer :: idiag_a2rhophim=0  ! DIAG_DOC: $a^2 rho$
+  integer :: idiag_a2rhogphim=0 ! DIAG_DOC: $0.5 <grad phi^2>$
+  integer :: idiag_rho_chi=0    ! DIAG_DOC: $\rho_\chi$
+  integer :: idiag_sigEma=0     ! DIAG_DOC: $\rho_\chi$
+  integer :: idiag_sigBma=0     ! DIAG_DOC: $\rho_\chi$
+  integer :: idiag_count_eb0a=0 ! DIAG_DOC: $f_\mathrm{EB0}$
 !
   contains
 !****************************************************************************
@@ -152,7 +163,8 @@ module backreact_infl
 !
 !  6-oct-03/tony: coded
 !
-  use FArrayManager
+      use FArrayManager
+      use SharedVariables, only: put_shared_variable
 !
       if (lroot) call svn_id( &
            "$Id$")
@@ -174,6 +186,15 @@ module backreact_infl
       ispecialvar=iinfl_phi
       ispecialvar2=iinfl_dphi
 !
+      call put_shared_variable('ddotam',ddotam_all,caller='register_backreact_infl')
+      call put_shared_variable('Hscript',Hscript)
+      call put_shared_variable('e2m_all',e2m_all)
+      call put_shared_variable('b2m_all',b2m_all)
+      call put_shared_variable('sigEm_all',sigEm_all,caller='register_backreact_infl')
+      call put_shared_variable('sigBm_all',sigBm_all,caller='register_backreact_infl')
+      call put_shared_variable('echarge',echarge,caller='register_backreact_infl')
+      call put_shared_variable('lrho_chi',lrho_chi)
+!
     endsubroutine register_special
 !***********************************************************************
     subroutine initialize_special(f)
@@ -182,22 +203,32 @@ module backreact_infl
 !
 !  06-oct-03/tony: coded
 !
-      use SharedVariables, only: get_shared_variable, put_shared_variable
+      use SharedVariables, only: get_shared_variable
+      use FArrayManager, only: farray_index_by_name_ode
 !
       real, dimension (mx,my,mz,mfarray) :: f
+      integer :: iLCDM_lna
+!
+      if (lflrw) then
+        iLCDM_lna=farray_index_by_name_ode('iLCDM_lna')
+        if (iLCDM_lna>0) call fatal_error('initialize_special', 'there is a conflict with iLCDM_lna')
+      endif
+!
+!  set axionmass**2
 !
       axionmass2=axionmass**2
 !
-      call put_shared_variable('ddotam',ddotam_all,caller='initialize_backreact_infl_ode')
-      call put_shared_variable('ascale',ascale,caller='initialize_backreact_infl')
-      call put_shared_variable('Hscript',Hscript,caller='initialize_backreact_infl')
-!
       if (lmagnetic .and. lem_backreact) then
-        call get_shared_variable('alpf',alpf)
+        call get_shared_variable('alpf',alpf,caller='initialize_backreact_infl')
         call get_shared_variable('lphi_hom',lphi_hom)
+        call get_shared_variable('sigE_prefactor',sigE_prefactor)
+        call get_shared_variable('sigB_prefactor',sigB_prefactor)
+        call get_shared_variable('lcollinear_EB',lcollinear_EB)
+        call get_shared_variable('lcollinear_EB_aver',lcollinear_EB_aver)
+        call get_shared_variable('lnoncollinear_EB',lnoncollinear_EB)
+        call get_shared_variable('lnoncollinear_EB_aver',lnoncollinear_EB_aver)
       else
-        allocate(alpf)
-        allocate(lphi_hom)
+        if (.not.associated(alpf)) allocate(alpf,lphi_hom)
         alpf=0.
         lphi_hom=.false.
       endif
@@ -256,7 +287,8 @@ module backreact_infl
             Vpotential=.5*axionmass2*phi0**2
             Hubble_ini=sqrt(8.*pi/3.*(.5*axionmass2*phi0**2*ascale_ini**2))
 !            dphi0=-ascale_ini*sqrt(2*eps/3.*Vpotential)
-            dphi0=-sqrt(1/(12.*pi))*axionmass*ascale_ini
+           ! dphi0=-sqrt(1/(12.*pi))*axionmass*ascale_ini
+           ! dphi0=-sqrt(16*pi/3)*axionmass*ascale_ini
             tstart=-1/(ascale_ini*Hubble_ini)
             t=tstart
             lnascale=log(ascale_ini)
@@ -319,7 +351,8 @@ module backreact_infl
       if (lmagnetic) then
         lpenc_requested(i_bb)=.true.
         lpenc_requested(i_el)=.true.
-        if (lrho_chi) lpenc_requested(i_e2)=.true.
+        if (lrho_chi .or. lnoncollinear_EB .or. lnoncollinear_EB_aver .or. &
+          lcollinear_EB .or. lcollinear_EB_aver) lpenc_requested(i_e2)=.true.
       endif
 !
     endsubroutine pencil_criteria_special
@@ -494,19 +527,27 @@ module backreact_infl
     subroutine dspecial_dt_ode
 !
       use Diagnostics, only: save_name
+      use SharedVariables, only: get_shared_variable
+!     use Magnetic, only: eta_xtdep
 !
-      real :: sigmaE=0.
+      real :: rho_chi
 !
       if (lflrw) then
         df_ode(iinfl_lna)=df_ode(iinfl_lna)+Hscript
       endif
-      ascale=exp(f_ode(iinfl_lna))
+      rho_chi=f_ode(iinfl_rho_chi)
 !
-!  energy density of the charged particles
+!  Energy density of the charged particles.
+!  This is currently only done for <sigE>*<E^2>, and not for <sigE*E^2>.
 !
       if (lrho_chi) then
-        df_ode(iinfl_rho_chi)=df_ode(iinfl_rho_chi)-4.*Hscript*f_ode(iinfl_rho_chi) &
-          +2.*sigmaE*e2m/ascale**3
+        if (lnoncollinear_EB .or. lnoncollinear_EB_aver .or. &
+          lcollinear_EB .or. lcollinear_EB_aver) then
+          df_ode(iinfl_rho_chi)=df_ode(iinfl_rho_chi)-4.*Hscript*f_ode(iinfl_rho_chi) &
+            +(sigEm_all*e2m_all+sigBm_all*edotbm_all)/ascale**3
+        else
+          df_ode(iinfl_rho_chi)=df_ode(iinfl_rho_chi)-4.*Hscript*f_ode(iinfl_rho_chi)
+        endif
       endif
 !
 !  Diagnostics
@@ -519,6 +560,11 @@ module backreact_infl
         call save_name(a2rhom_all,idiag_a2rhom)
         call save_name(a2rhophim_all,idiag_a2rhophim)
         call save_name(a2rhogphim_all,idiag_a2rhogphim)
+        call save_name(rho_chi,idiag_rho_chi)
+        call save_name(sigEm_all,idiag_sigEma)
+        call save_name(sigBm_all,idiag_sigBma)
+        if (lnoncollinear_EB_aver .or. lcollinear_EB_aver) &
+          call save_name(count_eb0_all,idiag_count_eb0a)
       endif
 !
     endsubroutine dspecial_dt_ode
@@ -529,7 +575,7 @@ module backreact_infl
 !
       integer, intent(out) :: iostat
 !
-      read(parallel_unit, NML=backreact_infl_init_pars, IOSTAT=iostat)
+      read(parallel_unit, NML=special_init_pars, IOSTAT=iostat)
 !
     endsubroutine read_special_init_pars
 !***********************************************************************
@@ -537,7 +583,7 @@ module backreact_infl
 !
       integer, intent(in) :: unit
 !
-      write(unit, NML=backreact_infl_init_pars)
+      write(unit, NML=special_init_pars)
 !
     endsubroutine write_special_init_pars
 !***********************************************************************
@@ -547,7 +593,7 @@ module backreact_infl
 !
       integer, intent(out) :: iostat
 !
-      read(parallel_unit, NML=backreact_infl_run_pars, IOSTAT=iostat)
+      read(parallel_unit, NML=special_run_pars, IOSTAT=iostat)
 !
     endsubroutine read_special_run_pars
 !***********************************************************************
@@ -555,7 +601,7 @@ module backreact_infl
 !
       integer, intent(in) :: unit
 !
-      write(unit, NML=backreact_infl_run_pars)
+      write(unit, NML=special_run_pars)
 !
     endsubroutine write_special_run_pars
 !***********************************************************************
@@ -578,7 +624,8 @@ module backreact_infl
         idiag_dphim=0; idiag_dphi2m=0; idiag_dphirms=0
         idiag_Hscriptm=0; idiag_lnam=0; idiag_ddotam=0
         idiag_a2rhopm=0; idiag_a2rhom=0; idiag_a2rhophim=0
-        idiag_a2rhogphim=0;
+        idiag_a2rhogphim=0; idiag_rho_chi=0; idiag_sigEma=0
+        idiag_sigBma=0; idiag_count_eb0a=0
       endif
 !
       do iname=1,nname
@@ -595,6 +642,10 @@ module backreact_infl
         call parse_name(iname,cname(iname),cform(iname),'a2rhom',idiag_a2rhom)
         call parse_name(iname,cname(iname),cform(iname),'a2rhophim',idiag_a2rhophim)
         call parse_name(iname,cname(iname),cform(iname),'a2rhogphim',idiag_a2rhogphim)
+        call parse_name(iname,cname(iname),cform(iname),'rho_chi',idiag_rho_chi)
+        call parse_name(iname,cname(iname),cform(iname),'sigEma',idiag_sigEma)
+        call parse_name(iname,cname(iname),cform(iname),'sigBma',idiag_sigBma)
+        call parse_name(iname,cname(iname),cform(iname),'count_eb0a',idiag_count_eb0a)
       enddo
 !!
 !!!  write column where which magnetic variable is stored
@@ -615,25 +666,32 @@ module backreact_infl
       use Sub, only: dot2_mn, grad, curl, dot_mn
 !
       real, dimension (mx,my,mz,mfarray), intent(in) :: f
+      real :: boost, gam_EB, eprime, bprime, jprime1
+      real :: energy_scale
 !      real, dimension (nx,3) :: el, bb, gphi
 !      real, dimension (nx) :: e2, b2, gphi2, dphi, a21, a2rhop, a2rho
 !      real, dimension (nx) :: ddota, phi, a2, Vpotential, edotb
 !
-!  if requested, calculate here <dphi**2+gphi**2+(4./3.)*(E^2+B^2)/a^2>
+!  If requested, calculate here <dphi**2+gphi**2+(4./3.)*(E^2+B^2)/a^2>.
+!  This needs to be done on all processors, because otherwise ascale
+!  is not known on all processors.
 !
-      if (lroot) then
-        if(lflrw) then
-          lnascale=f_ode(iinfl_lna)
-          a2=exp(2*lnascale)
-        else
-          a2=1.
-        endif
+      if(lflrw) then
+        lnascale=f_ode(iinfl_lna)
+        ascale=exp(lnascale)
       endif
+      a2=ascale**2
       a21=1./a2
       call mpibcast_real(a2)
       call mpibcast_real(a21)
 !
-      ddotam=0.; a2rhopm=0.; a2rhom=0.; e2m=0; edotbm=0; a2rhophim=0.; a2rhogphim=0.
+!  In the following loop, go through all penciles and add up results to get e2m, etc.
+!
+      ddotam=0.; a2rhopm=0.; a2rhom=0.; e2m=0; b2m=0; edotbm=0; a2rhophim=0.; a2rhogphim=0.
+      sigE1m=0.; sigB1m=0.
+!
+!  In the following, sum over all mn pencils.
+!
       do n=n1,n2
       do m=m1,m2
         call prep_ode_right(f)
@@ -645,16 +703,35 @@ module backreact_infl
       a2rhophim=a2rhophim/nwgrid
       a2rhogphim=a2rhogphim/nwgrid
       ddotam=(four_pi_over_three/nwgrid)*ddotam
-      if (lphi_hom) then
+      if (lphi_hom .or. lrho_chi .or. lnoncollinear_EB .or. lnoncollinear_EB_aver) then
         edotbm=edotbm/nwgrid
         call mpiallreduce_sum(edotbm,edotbm_all)
       endif
 !
 !  mean electric energy density
 !
-      if (lrho_chi) then
+!  Get eta_xtdep from magnetic.
+!
+!     if (lmagnetic .and. lem_backreact) then
+!       call get_shared_variable('eta_xtdep',eta_xtdep)
+!     endif
+!
+      if (lrho_chi .or. lnoncollinear_EB .or. lnoncollinear_EB_aver &
+        .or. lcollinear_EB .or. lcollinear_EB_aver) then
         e2m=e2m/nwgrid
+        b2m=b2m/nwgrid
         call mpiallreduce_sum(e2m,e2m_all)
+        call mpiallreduce_sum(b2m,b2m_all)
+!
+!  The following is not done for averages. This is because sigE1m and sigB1m
+!  are calculated in their own section further below in the same routine.
+!
+        if (lrho_chi .or. lnoncollinear_EB .or. lcollinear_EB) then
+          sigE1m=sigE1m/nwgrid
+          sigB1m=sigB1m/nwgrid
+          call mpiallreduce_sum(sigE1m,sigE1m_all)
+          call mpiallreduce_sum(sigB1m,sigB1m_all)
+        endif
       endif
 !
       call mpireduce_sum(a2rhopm,a2rhopm_all)
@@ -664,12 +741,14 @@ module backreact_infl
       call mpiallreduce_sum(ddotam,ddotam_all)
 !
 !  Choice of prescription for Hscript
+!  Consider renaming Hscript -> Hscript2
 !
       if (lroot .and. lflrw) then
         select case (Hscript_choice)
           case ('default')
-            !Hscript=sqrt((8.*pi/3.)*a2rhom_all)
-            Hscript=(8.*pi/3.)*sqrt(a2rhom_all)
+            !Hscript=(8.*pi/3.)*sqrt(a2rhom_all)
+!AB: this version below was the old one, but appears incorrect
+            Hscript=sqrt((8.*pi/3.)*a2rhom_all)
           case ('set')
             Hscript=Hscript0
             a2=1.
@@ -679,7 +758,71 @@ module backreact_infl
         endselect
       endif
 !
+!  Broadcast to other processors, and each processor uses put_shared_variable
+!  to get the values to other subroutines.
+!
       call mpibcast_real(Hscript)
+      call mpibcast_real(e2m_all)
+      call mpibcast_real(b2m_all)
+!
+!  Choice of echarge prescription.
+!
+      if (lnoncollinear_EB .or. lnoncollinear_EB_aver &
+        .or. lcollinear_EB .or. lcollinear_EB_aver) then
+        select case (echarge_type)
+          case ('const')
+            echarge=echarge_const
+          case ('erun')
+            energy_scale=(.5*e2m_all+.5*b2m_all)**.25/ascale
+            echarge=1./sqrt(1./.35**2+41./(48.*pi**2)*alog(mass_zboson/energy_scale))
+        endselect
+      else
+        echarge=echarge_const
+      endif
+!
+!  Compute sigE and sigB from sigE1 and sigB1.
+!  The mean conductivities are also needed in the local cases,
+!  because they are used in the calculation of rho_chi.
+!
+      if (lnoncollinear_EB .or. lnoncollinear_EB_aver &
+        .or. lcollinear_EB .or. lcollinear_EB_aver) then
+        if (lnoncollinear_EB_aver) then
+          boost=sqrt((e2m_all-b2m_all)**2+4.*edotbm_all**2)
+          gam_EB=sqrt21*sqrt(1.+(e2m_all+b2m_all)/boost)
+          eprime=sqrt21*sqrt(e2m_all-b2m_all+boost)
+          bprime=sqrt21*sqrt(b2m_all-e2m_all+boost)*sign(1.,edotbm_all)
+          if (eprime/=0. .and. bprime/=0.) then
+            jprime1=1./(6.*pi**2)*eprime*abs(bprime)/tanh(pi*abs(bprime)/eprime)
+            sigE1m_all=abs(jprime1)*eprime/(gam_EB*boost)
+            sigB1m_all=abs(jprime1)*edotbm_all/(eprime*gam_EB*boost)
+            count_eb0_all=0.
+          else
+            sigE1m_all=0.
+            sigB1m_all=0.
+            count_eb0_all=1.
+          endif
+!
+!  Similarly for collinear case.
+!
+        elseif (lcollinear_EB_aver) then
+          eprime=sqrt(e2m_all)
+          bprime=sqrt(b2m_all)
+          if (eprime/=0. .and. bprime/=0.) then
+            sigE1m_all=1./(6.*pi**2)*bprime/tanh(pi*abs(bprime)/eprime)
+            sigB1m_all=0.
+            count_eb0_all=0.
+          else
+            sigE1m_all=0.
+            sigB1m_all=0.
+            count_eb0_all=1.
+          endif
+        endif
+!
+!  Apply Chypercharge, echarge, and Hscript universally for aver and nonaver.
+!
+        sigEm_all=sigE_prefactor*Chypercharge*echarge**3*sigE1m_all/Hscript
+        sigBm_all=sigB_prefactor*Chypercharge*echarge**3*sigB1m_all/Hscript
+      endif
 !
     endsubroutine special_after_boundary
 !***********************************************************************
@@ -690,7 +833,8 @@ module backreact_infl
       real, dimension (mx,my,mz,mfarray), intent(in) :: f
       real, dimension (nx,3) :: el, bb, gphi
       real, dimension (nx) :: e2, b2, gphi2, dphi, a2rhop, a2rho
-      real, dimension (nx) :: ddota, phi, Vpotential, edotb
+      real, dimension (nx) :: ddota, phi, Vpotential, edotb, sigE1, sigB1
+      real, dimension (nx) :: boost, gam_EB, eprime, bprime, jprime1
 !
 !  if requested, calculate here <dphi**2+gphi**2+(4./3.)*(E^2+B^2)/a^2>
 !
@@ -708,7 +852,6 @@ module backreact_infl
         a2rho=0.5*(dphi**2+gphi2)
         a2rhophim=a2rhophim+sum(a2rho)
       endif
-
 !
       if (iex/=0 .and. lem_backreact) then
         el=f(l1:l2,m,n,iex:iez)
@@ -717,6 +860,9 @@ module backreact_infl
         call dot2_mn(el,e2)
         a2rhop=a2rhop+(.5*fourthird)*(e2+b2)*a21
         a2rho=a2rho+.5*(e2+b2)*a21
+        if (lrho_chi) then
+          a2rho=a2rho+scale_rho_chi_Heqn*a2*f_ode(iinfl_rho_chi)
+        endif
       endif
 !
       a2rhopm=a2rhopm+sum(a2rhop)
@@ -741,13 +887,63 @@ module backreact_infl
       ddotam=ddotam+sum(ddota)
       a2rho=a2rho+a2*Vpotential
       a2rhom=a2rhom+sum(a2rho)
-      if (lmagnetic .and. lem_backreact .and. lphi_hom) then
-        call dot_mn(el,bb,edotb)
-        edotbm=edotbm+sum(edotb)
+      if (lmagnetic .and. lem_backreact) then
+        if (lphi_hom .or. lrho_chi .or. lnoncollinear_EB .or. lnoncollinear_EB_aver &
+                                   .or. lcollinear_EB .or. lcollinear_EB_aver) then
+          call dot_mn(el,bb,edotb)
+          edotbm=edotbm+sum(edotb)
+!
+!  Repeat calculation of sigE and sigB. Do this first without
+!  echarge and Hscript and apply those factors later.
+!  Do the following block only when lnoncollinear_EB, but not when lnoncollinear_EB_aver.
+!
+          if (lnoncollinear_EB) then
+            boost=sqrt((e2-b2)**2+4.*edotb**2)
+            gam_EB=sqrt21*sqrt(1.+(e2+b2)/boost)
+            eprime=sqrt21*sqrt(e2-b2+boost)
+            bprime=sqrt21*sqrt(b2-e2+boost)*sign(1.,edotb)
+            where (eprime/=0. .and. bprime/=0.)
+              jprime1=1./(6.*pi**2)*eprime*abs(bprime)/tanh(pi*abs(bprime)/eprime)
+              sigE1=abs(jprime1)*eprime/(gam_EB*boost)
+              sigB1=abs(jprime1)*edotb/(eprime*gam_EB*boost)
+            elsewhere
+              sigE1=0.
+              sigB1=0.
+            endwhere
+          endif
+!
+!  Repeat calculation of sigE and sigB. Do this first without
+!  echarge and Hscript and apply those factors later.
+!  Do the following block only when lnoncollinear_EB, but not when lnoncollinear_EB_aver.
+!
+          if (lcollinear_EB) then
+            eprime=sqrt(e2)
+            bprime=sqrt(b2)
+            where (eprime/=0. .and. bprime/=0.)
+              sigE1=1./(6.*pi**2)*bprime/tanh(pi*bprime/eprime)
+              sigB1=0.
+            elsewhere
+              sigE1=0.
+              sigB1=0.
+            endwhere
+          endif
+        endif
       endif
 !
-      if (lmagnetic .and. lem_backreact .and. lrho_chi) then
-        e2m=e2m+sum(e2)
+!  Compute e2m per pencil. It becomes the total e2m after calling prep_ode_right
+!  for each pencil. Also require either lrho_chi or lnoncollinear_EB
+!  In case of lnoncollinear_EB_aver or lcollinear_EB_aver, do the computation outside prep_ode_right.
+!
+      if ((lmagnetic .and. lem_backreact) .and. (lrho_chi)) then
+        if (lnoncollinear_EB .or. lnoncollinear_EB_aver .or. &
+          lcollinear_EB .or. lcollinear_EB_aver) then
+          e2m=e2m+sum(e2)
+          b2m=b2m+sum(b2)
+          if ((lnoncollinear_EB .or. lcollinear_EB)) then
+            sigE1m=sigE1m+sum(sigE1)
+            sigB1m=sigB1m+sum(sigB1)
+          endif
+        endif
       endif
 !
     endsubroutine prep_ode_right
@@ -759,6 +955,6 @@ module backreact_infl
 !**  copies dummy routines from nospecial.f90 for any Special      **
 !**  routines not implemented in this file                         **
 !**                                                                **
-    include '../backreact_infl_dummies.inc'
+    include '../special_dummies.inc'
 !***********************************************************************
-endmodule backreact_infl
+endmodule Special

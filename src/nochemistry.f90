@@ -11,7 +11,7 @@
 !
 ! PENCILS PROVIDED Ywater, lambda; chem_conc(nchemspec)
 ! PENCILS PROVIDED nucl_rmin, nucl_rate, conc_satm, ff_cond
-! PENCILS PROVIDED cond_heat
+! PENCILS PROVIDED latent_heat
 !
 !***************************************************************
 module Chemistry
@@ -19,7 +19,6 @@ module Chemistry
   use Cdata
   use General, only: keep_compiler_quiet
   use Messages
-  use EquationOfState
 !
   implicit none
 !
@@ -47,7 +46,7 @@ module Chemistry
       call keep_compiler_quiet(f)
 !
     endsubroutine initialize_chemistry
-!***********************************************************************
+!*********************************************************************** 
     subroutine init_chemistry(f)
 !
       real, dimension (mx,my,mz,mfarray) :: f
@@ -291,6 +290,18 @@ module Chemistry
 !
     endsubroutine chemspec_normalization_N2
 !***********************************************************************
+    subroutine chemistry_init_reduc_pointers
+!
+!    7-feb-24 TP: dummy
+!
+    endsubroutine chemistry_init_reduc_pointers
+!***********************************************************************
+    subroutine chemistry_diags_reductions
+!
+!    7-feb-24 TP: dummy
+!
+    endsubroutine chemistry_diags_reductions 
+!***********************************************************************
    subroutine find_species_index(species_name,ind_glob,ind_chem,found_specie)
 !
 !  Find index in the f array for specie
@@ -378,7 +389,19 @@ module Chemistry
       call keep_compiler_quiet(p)
 !
     end subroutine cond_spec_nucl_lagr
-    !***********************************************************************
+!***********************************************************************
+    subroutine pushpars2c(p_par)
+
+    use Syscalls, only: copy_addr
+
+    integer, parameter :: n_pars=1
+    integer(KIND=ikind8), dimension(n_pars) :: p_par
+
+    call copy_addr(rgas,p_par(1))
+
+    endsubroutine pushpars2c
+!***********************************************************************
+
 
 
 

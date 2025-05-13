@@ -19,6 +19,10 @@ module Diagnostics
   public :: prep_finalize_thread_diagnos
   public :: diagnostic, initialize_time_integrals, get_average_density
   public :: xyaverages_z, xzaverages_y, yzaverages_x
+  public :: diagnostics_init_reduc_pointers
+  public :: diagnostics_diag_reductions
+  !public :: diagnostics_read_diag_accum, diagnostics_write_diag_accum
+  !public :: diagnostics_init_private_accumulators
   public :: phizaverages_r, yaverages_xz, zaverages_xy
   public :: phiaverages_rz
   public :: write_1daverages, write_2daverages
@@ -52,6 +56,11 @@ module Diagnostics
   public :: gen_form_legend
   public :: sign_masked_xyaver
   public :: report_undefined_diagnostics
+  public :: allocate_diagnostic_names
+  public :: allocate_diagnostic_arrays
+  public :: calc_nnames
+  public :: save_diagnostic_controls
+  public :: restore_diagnostic_controls
 !
   interface max_name
     module procedure max_name_int
@@ -92,19 +101,27 @@ module Diagnostics
     module procedure zsum_mn_name_xy_mpar_vec
   endinterface zsum_mn_name_xy_mpar
 !
+  real, target, dimension (nrcyl) :: phiavg_norm
+  public :: phiavg_norm
+  !$omp threadprivate(phiavg_norm)
+
   private
 !
+  real, pointer, dimension(:) :: p_phiavg_norm
   real, dimension (nrcyl,nx) :: phiavg_profile=0.0
-  real, dimension (nrcyl) :: phiavg_norm
   real :: dVol_rel1, dA_xy_rel1, dA_yz_rel1, dA_xz_rel1, dL_y_rel1
 
   character (len=intlen) :: ch1davg, ch2davg
   integer :: ixav_max
-  integer :: nfirst=0
 !
 ! Variables for Yin-Yang grid: z-averages.
 !
   real, dimension(:,:,:), allocatable :: fnamexy_cap
+!
+! TP: variables for communication between threads
+!
+  real ::  dt_save,eps_rkf_save
+  integer :: it_save
 
   contains
 !***********************************************************************
@@ -265,12 +282,12 @@ module Diagnostics
 !
       call init_xaver
 !
-      nfirst = nn(1)
-
     endsubroutine initialize_diagnostics
 !***********************************************************************
     subroutine initialize_diagnostic_arrays
-
+!
+!  Not needed so far.
+!
       if (ldiagnos.and.allocated(fname)) fname=0.
       if (l1davgfirst) then
         if (allocated(fnamex)) fnamex=0.
@@ -301,6 +318,7 @@ module Diagnostics
       use IO, only: IO_strategy
       use HDF5_IO, only: output_timeseries
       use Sub, only: insert
+      use Syscalls, only: system_cmd
 !
       character (len=1000) :: fform,legend,line
       integer :: iname, nnamel
@@ -315,15 +333,15 @@ module Diagnostics
 !
       if (lroot) then
         call save_name(tdiagnos,idiag_t)
-        call save_name(dt,idiag_dt)
-        call save_name(eps_rkf,idiag_eps_rkf)
-        call save_name(one_real*(it-1),idiag_it)
+        call save_name(dtdiagnos,idiag_dt)
+        call save_name(eps_rkf_diagnos,idiag_eps_rkf)
+        call save_name(one_real*(itdiagnos-1),idiag_it)
 !
 !  Whenever itype_name=ilabel_max_dt, scale result by dt (for printing Courant
 !  time).
 !
         do iname=1,nname
-          if (itype_name(iname)==ilabel_max_dt) fname(iname)=dt*fname(iname)
+          if (itype_name(iname)==ilabel_max_dt) fname(iname)=dtdiagnos*fname(iname)
         enddo
 
         call gen_form_legend(fform,legend)
@@ -384,6 +402,7 @@ module Diagnostics
         write(lun,'(a)') trim(line)
         !flush(lun)               ! this is a F2003 feature...
         close(lun)
+        if (lupdate_cvs) call system_cmd("cvs ci -m 'automatic update' >& /dev/null &")
 !
 !  Write to stdout.
 !
@@ -803,9 +822,9 @@ module Diagnostics
 !
 !  Communicate over all processors.
 !
-      call mpireduce_max(fmax_tmp,fmax,nmax_count,MPI_COMM_WORLD)
-      call mpireduce_sum(fsum_tmp,fsum,nsum_count,comm=MPI_COMM_WORLD)  !,nonblock=maxreq)        ! wrong for Yin-Yang due to overlap
-      if (lweight_comm) call mpireduce_sum(fweight_tmp,fweight,nsum_count,comm=MPI_COMM_WORLD)!   ~
+      call mpireduce_max(fmax_tmp,fmax,nmax_count)
+      call mpireduce_sum(fsum_tmp,fsum,nsum_count)  !,nonblock=maxreq)        ! wrong for Yin-Yang due to overlap
+      if (lweight_comm) call mpireduce_sum(fweight_tmp,fweight,nsum_count)!   ~
       !call mpiwait(maxreq)
 !
 !  The result is present only on the root processor.
@@ -928,7 +947,7 @@ module Diagnostics
 !
     endsubroutine initialize_time_integrals
 !***********************************************************************
-    subroutine xyaverages_z
+    subroutine xyaverages_z(fnamez,ncountsz)
 !
 !  Calculate xy-averages (still depending on z)
 !  NOTE: these averages depend on z, so after summation in x and y they
@@ -946,6 +965,8 @@ module Diagnostics
 !
       real, dimension(nz,nprocz,nnamez) :: fsumz
       integer, dimension(nz) :: nsum, ncount
+      integer, dimension(:,:) :: ncountsz
+      real, dimension(:,:,:) :: fnamez
       integer :: idiag
 !
       if (nnamez>0) then
@@ -984,13 +1005,14 @@ module Diagnostics
 !
     endsubroutine xyaverages_z
 !***********************************************************************
-    subroutine xzaverages_y
+    subroutine xzaverages_y(fnamey)
 !
 !  Calculate xz-averages (still depending on y).
 !
 !  12-oct-05/anders: adapted from xyaverages_z
 !
       real, dimension (ny,nprocy,nnamey) :: fsumy
+      real, dimension (:,:,:) :: fnamey
 !
 !  Communicate over all processors.
 !  The result is only present on the root processor.
@@ -1004,13 +1026,14 @@ module Diagnostics
 !
     endsubroutine xzaverages_y
 !***********************************************************************
-    subroutine yzaverages_x
+    subroutine yzaverages_x(fnamex)
 !
 !  Calculate yz-averages (still depending on x).
 !
 !   2-oct-05/anders: adapted from xyaverages_z
 !
       real, dimension (nx,nprocx,nnamex) :: fsumx
+      real, dimension (:,:,:) :: fnamex
 !
 !  Communicate over all processors.
 !  The result is only present on the root processor.
@@ -1022,7 +1045,7 @@ module Diagnostics
 !
     endsubroutine yzaverages_x
 !***********************************************************************
-    subroutine phizaverages_r
+    subroutine phizaverages_r(fnamer)
 !
 !  Calculate phiz-averages (still depending on r).
 !
@@ -1031,6 +1054,7 @@ module Diagnostics
       real, dimension (nrcyl,nnamer) :: fsumr
       integer :: iname
       real, dimension (nrcyl) :: norm
+      real, dimension (:,:) :: fnamer
 !
 !  Communicate over all processors.
 !  The result is only present on the root processor.
@@ -1038,7 +1062,7 @@ module Diagnostics
 !
       if (nnamer>0) then
         call mpireduce_sum(fnamer,fsumr,(/nrcyl,nnamer/))
-        if (ipz==0) call mpireduce_sum(phiavg_norm,norm,nrcyl,comm=MPI_COMM_XYPLANE)
+        if (ipz==0) call mpireduce_sum(phiavg_norm,norm,nrcyl)
         if (lroot) then
           do iname=1,nnamer
             fnamer(:,iname)=fsumr(:,iname)/(norm*nzgrid)
@@ -1048,13 +1072,14 @@ module Diagnostics
 !
     endsubroutine phizaverages_r
 !***********************************************************************
-    subroutine yaverages_xz
+    subroutine yaverages_xz(fnamexz)
 !
 !  Calculate y-averages (still depending on x and z).
 !
 !   7-jun-05/axel: adapted from zaverages_xy
 !
       real, dimension (nx,nz,nnamexz) :: fsumxz
+      real, dimension (:,:,:) :: fnamexz
 !
 !  Communicate over all processors along y beams.
 !  The result is only present on the y-root processors.
@@ -1066,7 +1091,7 @@ module Diagnostics
 !
     endsubroutine yaverages_xz
 !***********************************************************************
-    subroutine zaverages_xy
+    subroutine zaverages_xy(fnamexy)
 !
 !  Calculate z-averages (still depending on x and y).
 !
@@ -1078,6 +1103,7 @@ module Diagnostics
 
       real, dimension(:,:,:), allocatable :: fsumxy
       real :: fac
+      real, dimension(:,:,:) :: fnamexy
 !
       if (nnamexy>0) then
 
@@ -1105,7 +1131,7 @@ module Diagnostics
 !
     endsubroutine zaverages_xy
 !***********************************************************************
-    subroutine phiaverages_rz
+    subroutine phiaverages_rz(fnamerz)
 !
 !  Calculate azimuthal averages (as functions of r_cyl,z).
 !  NOTE: these averages depend on (r and) z, so after summation they
@@ -1117,6 +1143,7 @@ module Diagnostics
       integer :: i
       real, dimension(nrcyl,nz,nprocz,nnamerz) :: fsumrz
       real, dimension(nrcyl) :: norm
+      real, dimension(:,:,:,:) :: fnamerz
 !
 !  Communicate over all processors.
 !  The result is only present on the root processor
@@ -1124,7 +1151,7 @@ module Diagnostics
 !
       if (nnamerz>0) then
         call mpireduce_sum(fnamerz,fsumrz,(/nrcyl,nz,nprocz,nnamerz/))
-        if (ipz==0) call mpireduce_sum(phiavg_norm,norm,nrcyl,comm=MPI_COMM_XYPLANE)  ! avoid double comm!
+        if (ipz==0) call mpireduce_sum(phiavg_norm,norm,nrcyl,idir=12)  ! avoid double comm!
         if (lroot) then
           do i=1,nnamerz
             fnamerz(:,:,:,i)=fsumrz(:,:,:,i)/spread(spread(norm,2,nz),3,nprocz)
@@ -1155,6 +1182,7 @@ module Diagnostics
       real :: taver
 !
       taver = 0.0
+      t1ddiagnos = t
       ltimer = ip <= 12 .and. lroot
 !
       if (nnamez > 0) then
@@ -1269,6 +1297,7 @@ module Diagnostics
       real :: taver
 !
       taver = 0.0
+      t2davgfirst = t
       ltimer = ip <= 12 .and. lroot
 !
       if (lwrite_yaverages) then
@@ -1621,8 +1650,6 @@ module Diagnostics
 
       if (iname==0) return
 
-      if (loptest(lsqrt)) &
-        itype_name(iname)=ilabel_sum_sqrt
       if (loptest(lsqrt)) then
         itype_name(iname)=ilabel_sum_sqrt
       elseif (loptest(llog10)) then
@@ -2129,7 +2156,7 @@ module Diagnostics
       type (pencil_case) :: p
       real :: dv
       integer :: iname,i,isum
-      logical, save :: lfirsttime=.true.
+      ! logical, save :: lfirsttime=.true.
 !
       if (iname /= 0) then
 !
@@ -2137,10 +2164,10 @@ module Diagnostics
           rlim=p%rcyl_mn
         elseif (lsphere_in_a_box) then
           rlim=p%r_mn
-        elseif (lfirsttime) then
+        ! elseif (lfirsttime) then
           call warning("sum_lim_mn_name","no reason to call it when "// &
                "not using a cylinder or"//achar(10)//"a sphere embedded in a Cartesian grid")
-          lfirsttime=.false.
+          ! lfirsttime=.false.
         endif
 !
         dv=1.
@@ -2883,6 +2910,7 @@ module Diagnostics
       integer,             intent(in) :: iname, m
 
       integer :: ml
+
 !
       if (iname==0) return
 !
@@ -2927,12 +2955,24 @@ module Diagnostics
 !
       if (lfirstpoint) phiavg_norm=0.
 !
-!  Normalization factor, not depending on n, so only done for n=nfirst.
+!  Normalization factor, not depending on n, so only done for n=nn(1)
 !  As we calculate z-averages, multiply by nzgrid when used.
 !
-      if (n==nfirst) phiavg_norm=phiavg_norm+sum(phiavg_profile,2)
+      if (n==nn(1)) phiavg_norm=phiavg_norm+sum(phiavg_profile,2)
 !
     endsubroutine calc_phiavg_profile
+!***********************************************************************
+    subroutine diagnostics_init_reduc_pointers
+!
+      p_phiavg_norm => phiavg_norm
+!
+    endsubroutine diagnostics_init_reduc_pointers
+!***********************************************************************
+    subroutine diagnostics_diag_reductions
+!
+      p_phiavg_norm = p_phiavg_norm + phiavg_norm
+!
+    endsubroutine diagnostics_diag_reductions
 !***********************************************************************
     subroutine phisum_mn_name_rz(a,iname)
 !
@@ -2991,6 +3031,7 @@ module Diagnostics
 !
 !   3-Dec-10/dhruba+joern: coded
 !   11-jan-11/MR: parameter nnamel added
+!   22-mar-25/TP: refactored name allocations to separate function
 !
       use File_io, only : parallel_unit_vec, parallel_open, parallel_close, parallel_count_lines
       use General, only : itoa
@@ -3002,10 +3043,9 @@ module Diagnostics
       integer :: isound
       logical :: lval
       integer :: ierr, il
-      integer :: mcoords_sound
       integer, allocatable, dimension (:,:) :: sound_inds
       real, dimension(dimensionality) :: coords
-      integer :: lsound, msound, nsound, nitems
+      integer :: lsound, msound, nsound, nitems,mcoords_sound
 !
 !  Allocate and initialize to zero. Setting it to zero is only
 !  necessary because of the pencil test, which doesn't compute these
@@ -3060,12 +3100,10 @@ module Diagnostics
         if (ierr>0) call fatal_error('allocate_sound','Could not allocate sound_coords_list')
         sound_coords_list = sound_inds(1:ncoords_sound,:)
 !
-        allocate(fname_sound(ncoords_sound,nnamel),stat=ierr)
         if (ierr>0) call fatal_error('allocate_sound','Could not allocate fname_sound')
         if (ldebug) print*, 'allocate_sound: allocated memory for '// &
                             'fname_sound  with nname_sound  =', nnamel
 !
-        fname_sound = 0.0
 !
         allocate(cform_sound(nnamel),stat=ierr)
         if (ierr>0) call fatal_error('allocate_sound','Could not allocate cform_sound')
@@ -3078,6 +3116,17 @@ module Diagnostics
       deallocate(sound_inds)
 !
     endsubroutine allocate_sound
+!***********************************************************************
+    subroutine allocate_sound_data(nnamel)
+!
+!   22-mar-25/TP: coded
+!
+        integer, intent(in) :: nnamel
+        integer :: ierr
+        allocate(fname_sound(ncoords_sound,nnamel),stat=ierr)
+        fname_sound = 0.0
+
+    endsubroutine allocate_sound_data
 !***********************************************************************
     subroutine sound_clean_up
 !
@@ -3100,16 +3149,11 @@ module Diagnostics
 !   11-jan-11/MR: parameter nnamel added
 !   18-aug-13/MR: accumulation of diagnostics enabled
 !   25-aug-13/MR: added allocation of itype_name
+!   25-mar-25/TP: refactored name allocations to their own function
 !
       integer, intent(in) :: nnamel
 !
       integer :: stat
-!
-      allocate(cname(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_fnames','Could not allocate cname')
-      if (ldebug) print*, 'allocate_fnames    : allocated memory for '// &
-                          'cname   with nname   =', nnamel
-      cname=''
 !
       allocate(fname(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_fnames','Could not allocate fname')
@@ -3119,6 +3163,23 @@ module Diagnostics
       if (stat>0) call fatal_error('allocate_fnames','Could not allocate fname_keep')
       fname=0.0
       fname_keep=0.0
+
+
+    endsubroutine allocate_fnames
+!***********************************************************************
+    subroutine allocate_cnames(nnamel)
+!
+!   25-mar-25/TP: separated from allocate_fnames
+!
+      integer, intent(in) :: nnamel
+!
+      integer :: stat
+      allocate(cname(nnamel),stat=stat)
+      if (ldebug) print*, 'allocate_fnames    : allocated memory for '// &
+                          'cname   with nname   =', nnamel
+      if (ldebug) flush(6)
+      if (stat>0) call fatal_error('allocate_fnames','Could not allocate cname')
+      cname=''
 !
       allocate(cform(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_fnames','Could not allocate cform')
@@ -3131,8 +3192,7 @@ module Diagnostics
       if (ldebug) print*, 'allocate_fnames    : allocated memory for '// &
                           'itype_name with nname   =', nnamel
       itype_name=ilabel_save
-
-    endsubroutine allocate_fnames
+    endsubroutine
 !***********************************************************************
     subroutine allocate_vnames(nnamel)
 !
@@ -3166,6 +3226,8 @@ module Diagnostics
 !
 !   24-nov-09/anders: copied from allocate_yaverages
 !   11-jan-11/MR: parameter nnamel added
+!   25-mar-25/TP: refactored name allocations to their own function
+!
 !
       integer, intent(in) :: nnamel
 !
@@ -3176,24 +3238,11 @@ module Diagnostics
 !  averages, and only evaluates its output for special purposes
 !  such as computing mean field energies in calc_bmz, for example,
 !
-      allocate(cnamez(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_xyaverages','Could not allocate cnamez')
-      if (ldebug) print*, 'allocate_xyaverages: allocated memory for '// &
-                          'cnamez  with nnamez  =', nnamel
-      cnamez=''
-!
       allocate(fnamez(nz,nprocz,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_xyaverages','Could not allocate fnamez')
       if (ldebug) print*, 'allocate_xyaverages: allocated memory for '// &
                           'fnamez  with nnamez  =', nnamel
       fnamez=0.0
-!
-      allocate(cformz(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_xyaverages','Could not allocate cformz')
-      if (ldebug) print*, 'allocate_xyaverages: allocated memory for '// &
-                          'cformz  with nnamez  =', nnamel
-      cformz=''
-!
       allocate(ncountsz(nz,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_xyaverages','Could not allocate ncountsz')
       if (ldebug) print*, 'allocate_xyaverages: allocated memory for '// &
@@ -3202,36 +3251,66 @@ module Diagnostics
 !
     endsubroutine allocate_xyaverages
 !***********************************************************************
+    subroutine allocate_xyaverages_names(nnamel)
+!
+!   25-mar-25/TP: carved from allocate_xyaverages
+!
+      integer, intent(in) :: nnamel
+      integer :: stat
+
+      allocate(cnamez(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_xyaverages','Could not allocate cnamez')
+      if (ldebug) print*, 'allocate_xyaverages: allocated memory for '// &
+                          'cnamez  with nnamez  =', nnamel
+      cnamez=''
+!
+      allocate(cformz(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_xyaverages','Could not allocate cformz')
+      if (ldebug) print*, 'allocate_xyaverages: allocated memory for '// &
+                          'cformz  with nnamez  =', nnamel
+      cformz=''
+!
+    endsubroutine allocate_xyaverages_names
+!***********************************************************************
     subroutine allocate_xzaverages(nnamel)
 !
 !  Allocate arrays needed for xz-averages.
 !
 !   24-nov-09/anders: copied from allocate_yaverages
 !   11-jan-11/MR: parameter nnamel added
+!   21-mar-25/TP: refactored name allocations to their own function
 !
       integer, intent(in) :: nnamel
 !
       integer :: stat
 !
-      allocate(cnamey(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_xzaverages','Could not allocate cnamey')
-      if (ldebug) print*, 'allocate_xzaverages: allocated memory for '// &
-                          'cnamey  with nnamey  =', nnamel
-      cnamey=''
 !
       allocate(fnamey(ny,nprocy,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_xzaverages','Could not allocate fnamey', .true.)
       if (ldebug) print*, 'allocate_xzaverages: allocated memory for '// &
                           'fnamey  with nnamey  =', nnamel
       fnamey=0.0
+    endsubroutine allocate_xzaverages
+!***********************************************************************
+    subroutine allocate_xzaverages_names(nnamel)
+
 !
+!   21-mar-25/TP: carved from allocate_xzaverages
+!
+      integer, intent(in) :: nnamel
+      integer :: stat
+
+      allocate(cnamey(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_xzaverages','Could not allocate cnamey')
+      if (ldebug) print*, 'allocate_xzaverages: allocated memory for '// &
+                          'cnamey  with nnamey  =', nnamel
+      cnamey=''
       allocate(cformy(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_xzaverages','Could not allocate cformy', .true.)
       if (ldebug) print*, 'allocate_xzaverages: allocated memory for '// &
                           'cformy  with nnamey  =', nnamel
       cformy=''
-!
-    endsubroutine allocate_xzaverages
+    endsubroutine allocate_xzaverages_names
 !***********************************************************************
     subroutine allocate_yzaverages(nnamel)
 !
@@ -3239,30 +3318,40 @@ module Diagnostics
 !
 !   24-nov-09/anders: copied from allocate_yaverages
 !   11-jan-11/MR: parameter nnamel added
+!   21-mar-25/TP: refactored name allocations to their own function
 !
       integer, intent(in) :: nnamel
 !
       integer :: stat
-!
-      allocate(cnamex(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_yzaverages','Could not allocate cnamex')
-      if (ldebug) print*, 'allocate_yzaverages: allocated memory for '// &
-                          'cnamex  with nnamex  =', nnamel
-      cnamex=''
 !
       allocate(fnamex(nx,nprocx,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_yzaverages','Could not allocate fnamex')
       if (ldebug) print*, 'allocate_yzaverages: allocated memory for '// &
                           'fnamex  with nnamex  =', nnamel
       fnamex=0.0
+    endsubroutine allocate_yzaverages
+!***********************************************************************
+    subroutine allocate_yzaverages_names(nnamel)
+!
+!   21-mar-25/TP: carved from allocate_yzaverages
+!
+
+      integer, intent(in) :: nnamel
+      integer :: stat
+
+      allocate(cnamex(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_yzaverages','Could not allocate cnamex')
+      if (ldebug) print*, 'allocate_yzaverages: allocated memory for '// &
+                          'cnamex  with nnamex  =', nnamel
+      cnamex=''
 !
       allocate(cformx(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_yzaverages','Could not allocate cformx')
       if (ldebug) print*, 'allocate_yzaverages: allocated memory for '// &
                           'cformx  with nnamex  =', nnamel
       cformx=''
-!
-    endsubroutine allocate_yzaverages
+
+    endsubroutine allocate_yzaverages_names
 !***********************************************************************
     subroutine allocate_phizaverages(nnamel)
 !
@@ -3270,22 +3359,31 @@ module Diagnostics
 !
 !   24-nov-09/anders: copied from allocate_yaverages
 !   11-jan-11/MR: parameter nnamel added
+!   21-mar-25/TP: refactored name allocations to their own function
 !
       integer, intent(in) :: nnamel
 !
       integer :: stat
-!
-      allocate(cnamer(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_phizaverages','Could not allocate cnamer')
-      if (ldebug) print*, 'allocate_phizaverages: allocated memory for '// &
-                          'cnamer  with nnamer =', nnamel
-      cnamer=''
 !
       allocate(fnamer(nrcyl,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_phizaverages','Could not allocate fnamer')
       if (ldebug) print*, 'allocate_phizaverages: allocated memory for '// &
                           'fnamer  with nnamer'
       fnamer=0.0
+    endsubroutine allocate_phizaverages
+!***********************************************************************
+    subroutine allocate_phizaverages_names(nnamel)
+!
+!   21-mar-25/TP: carved from allocate_phizaverages
+!
+      integer, intent(in) :: nnamel
+      integer :: stat
+      allocate(cnamer(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_phizaverages','Could not allocate cnamer')
+      if (ldebug) print*, 'allocate_phizaverages: allocated memory for '// &
+                          'cnamer  with nnamer =', nnamel
+      cnamer=''
+!
 !
       allocate(cformr(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_phizaverages','Could not allocate cformr')
@@ -3293,7 +3391,7 @@ module Diagnostics
                           'cformr  with nnamer =', nnamel
       cformr=''
 !
-    endsubroutine allocate_phizaverages
+    endsubroutine allocate_phizaverages_names
 !***********************************************************************
     subroutine allocate_yaverages(nnamel)
 !
@@ -3301,22 +3399,32 @@ module Diagnostics
 !
 !   12-aug-09/dhruba: coded
 !   11-jan-11/MR: parameter nnamel added
+!   21-mar-25/TP: refactored name allocations to their own function
 !
       integer, intent(in) :: nnamel
 !
       integer :: stat
-!
-      allocate(cnamexz(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_yaverages','Could not allocate cnamexz')
-      if (ldebug) print*, 'allocate_yaverages : allocated memory for '// &
-                          'cnamexz with nnamexz =', nnamel
-      cnamexz=''
 !
       allocate(fnamexz(nx,nz,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_yaverages','Could not allocate fnamexz')
       if (ldebug) print*, 'allocate_yaverages : allocated memory for '// &
                           'fnamexz with nnamexz =', nnamel
       fnamexz=0.0
+    endsubroutine allocate_yaverages
+!*******************************************************************
+    subroutine allocate_yaverages_names(nnamel)
+!
+!   21-mar-25/TP: carved from allocate_phizaverages
+!
+      integer, intent(in) :: nnamel
+      integer :: stat
+
+      allocate(cnamexz(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_yaverages','Could not allocate cnamexz')
+      if (ldebug) print*, 'allocate_yaverages : allocated memory for '// &
+                          'cnamexz with nnamexz =', nnamel
+      cnamexz=''
+!
 !
       allocate(cformxz(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_yaverages','Could not allocate cformxz')
@@ -3324,7 +3432,7 @@ module Diagnostics
                           'cformxz with nnamexz =', nnamel
       cformxz=''
 !
-    endsubroutine allocate_yaverages
+    endsubroutine allocate_yaverages_names
 !*******************************************************************
     subroutine allocate_zaverages(nnamel)
 !
@@ -3390,22 +3498,31 @@ module Diagnostics
 !
 !   24-nov-09/anders: copied from allocate_zaverages
 !   11-jan-11/MR: parameter nnamel=iadd+nnamerz instead of nnamerz
+!   21-mar-25/TP: refactored name allocations to their own function
 !
       integer, intent(in) :: nnamel
 !
       integer :: stat
-!
-      allocate(cnamerz(nnamel),stat=stat)
-      if (stat>0) call fatal_error('allocate_phiaverages','Could not allocate cnamerz')
-      if (ldebug) print*, 'allocate_phiaverages : allocated memory for '// &
-                          'cnamerz with nnamerz =', nnamel
-      cnamerz=''
 !
       allocate(fnamerz(nrcyl,nz,nprocz,nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_phiaverages','Could not allocate fnamerz')
       if (ldebug) print*, 'allocate_phiaverages : allocated memory for '// &
                           'fnamerz with nnamerz =', nnamel
       fnamerz=0.0
+    endsubroutine allocate_phiaverages
+!***********************************************************************
+    subroutine allocate_phiaverages_names(nnamel)
+!
+!   21-mar-25/TP: carved from allocate_phiaverages
+!
+      integer, intent(in) :: nnamel
+      integer :: stat
+      allocate(cnamerz(nnamel),stat=stat)
+      if (stat>0) call fatal_error('allocate_phiaverages','Could not allocate cnamerz')
+      if (ldebug) print*, 'allocate_phiaverages : allocated memory for '// &
+                          'cnamerz with nnamerz =', nnamel
+      cnamerz=''
+!
 !
       allocate(cformrz(nnamel),stat=stat)
       if (stat>0) call fatal_error('allocate_phiaverages','Could not allocate cformrz')
@@ -3413,7 +3530,7 @@ module Diagnostics
                           'cformrz with nnamerz =', nnamel
       cformrz=''
 !
-    endsubroutine allocate_phiaverages
+    endsubroutine allocate_phiaverages_names
 !***********************************************************************
     subroutine sign_masked_xyaver(quan,idiag)
 !
@@ -3654,23 +3771,251 @@ module Diagnostics
     endfunction name_is_present
 !***********************************************************************
     subroutine prep_finalize_thread_diagnos
-
+!
+!  For accumulated diagnostic variables get which reduction to perform:
+!  inds_max_diags/inds_sum_diags hold the indices of the fname entries,
+!  which need to be reduced by max/sum. Will be determined only once.
+!  Index vectors are threadprivate.
+!
+!  25-aug-23/TP: modified, bug fix
+!
       use General, only: allpos_in_array_int
 
-      integer :: nmax, nsum
-      logical, save :: firstcall=.true.
+      integer :: nmax, nsum, nmin, i
+      logical :: firstcall=.true., firstcall_from_pencil_check=.false.
+      integer, dimension(2) :: max_range, sum_range
+      !$omp threadprivate(firstcall)
+
+      max_range(1) = -5
+      max_range(2) = -1
+
+      sum_range(1) = 1
+      sum_range(2) = 40
+      
+!  Have to do this ugly workaround since the pencil tests call this function
+!  and we want the first non-pencil-test call.
+!
+      if (firstcall_from_pencil_check .and. .not. lpencil_check_at_work) then
+        firstcall = .true.
+        deallocate(inds_max_diags)
+        deallocate(inds_sum_diags)
+      endif
 
       if (.not.firstcall) return
 
-      nmax = allpos_in_array_int((/-5,-1/),itype_name)
-      allocate(inds_max_diags(nmax))
-      nmax = allpos_in_array_int((/-5,-1/),itype_name,inds_max_diags)
-      nsum = allpos_in_array_int((/1,40/),itype_name)
-      allocate(inds_sum_diags(nsum))
-      nsum = allpos_in_array_int((/1,40/),itype_name,inds_sum_diags)
+      nmax = allpos_in_array_int(max_range,itype_name)
+      if (nmax>0) then
+        allocate(inds_max_diags(nmax))
+        nmax = allpos_in_array_int(max_range,itype_name,inds_max_diags)
+      endif
+      nsum = allpos_in_array_int(sum_range,itype_name)
+      if (nsum>0) then
+        allocate(inds_sum_diags(nsum))
+        nsum = allpos_in_array_int(sum_range,itype_name,inds_sum_diags)
+      endif
 
       firstcall=.false.
+      firstcall_from_pencil_check=lpencil_check_at_work
 
     endsubroutine prep_finalize_thread_diagnos
+!***********************************************************************
+    subroutine    calc_nnames()
+!
+!  Calculates the sizes of diagnostic arrays
+!  21-mar-25/TP: carved out from rprint_list
+!
+      use General, only: numeric_precision
+      use File_io,         only: parallel_file_exists, parallel_count_lines,read_name_format
+
+      character (LEN=15)           :: print_in_file
+      character (LEN=*), parameter :: video_in_file    = 'video.in'
+      character (LEN=*), parameter :: sound_in_file    = 'sound.in'
+      character (LEN=*), parameter :: xyaver_in_file   = 'xyaver.in'
+      character (LEN=*), parameter :: xzaver_in_file   = 'xzaver.in'
+      character (LEN=*), parameter :: yzaver_in_file   = 'yzaver.in'
+      character (LEN=*), parameter :: phizaver_in_file = 'phizaver.in'
+      character (LEN=*), parameter :: yaver_in_file    = 'yaver.in'
+      character (LEN=*), parameter :: zaver_in_file    = 'zaver.in'
+      character (LEN=*), parameter :: phiaver_in_file  = 'phiaver.in'
+
+      print_in_file = 'print.in'
+      if (numeric_precision() == 'D') then
+        if (parallel_file_exists(trim(print_in_file)//'.double')) &
+            print_in_file = trim(print_in_file)//'.double'
+      endif
+
+      nname = max(0,parallel_count_lines(print_in_file,ignore_comments=.true.))
+
+      if ( dvid/=0.0 ) then
+        nnamev = max(0,parallel_count_lines(video_in_file))
+      endif
+
+      if ( dimensionality>0 .and. dsound/=0.0 ) then
+        nname_sound = max(0,parallel_count_lines(sound_in_file))
+      endif
+
+      nnamez = parallel_count_lines(xyaver_in_file)
+      nnamey = parallel_count_lines(xzaver_in_file)
+      nnamex = parallel_count_lines(yzaver_in_file)
+      nnamer = max(0,parallel_count_lines(phizaver_in_file))
+      nnamexz = parallel_count_lines(yaver_in_file)
+      nnamexy = parallel_count_lines(zaver_in_file)
+      nnamerz = parallel_count_lines(phiaver_in_file)
+
+
+    endsubroutine calc_nnames 
+!***********************************************************************
+    subroutine allocate_diagnostic_names()
+!
+!  Allocates diagnostic arrays holding the names of the diagnostic outputs
+!  Separate from the data allocations because of multithreading concerns
+!  21-mar-25/TP: coded
+!
+      if (nname>0) call allocate_cnames(nname)
+      if ( dvid/=0.0 ) then
+        if (nnamev>0) call allocate_vnames(nnamev)
+      endif
+      if ( dimensionality>0 .and. dsound/=0.0 ) then
+        if (nname_sound>0) call allocate_sound(nname_sound)
+      endif
+
+      if (nnamez>0) call allocate_xyaverages_names(nnamez)
+
+      if (nnamey>0) call allocate_xzaverages_names(nnamey)
+
+      if (nnamex>0) call allocate_yzaverages_names(nnamex)
+
+      if (nnamer>0) then
+        if (lcylinder_in_a_box.or.lsphere_in_a_box) then
+          call allocate_phizaverages_names(nnamer)
+        endif
+      endif
+
+      if (nnamexz>0) call allocate_yaverages_names(nnamexz)
+
+!
+      if (nnamexy>0) then
+        call allocate_zaverages(nnamexy)
+      endif
+
+      if (nnamerz>0) then
+        if (lcylinder_in_a_box.or.lsphere_in_a_box) then
+          call allocate_phiaverages_names(nnamerz)
+        endif
+      endif
+    endsubroutine allocate_diagnostic_names
+!***********************************************************************
+    subroutine allocate_diagnostic_arrays()
+!
+!  Allocates diagnostic arrays holding the output data
+!  Separate from the name allocations because of multithreading concerns
+!  21-mar-25/TP: coded
+!
+
+!
+!  Read print.in.double if applicable, else print.in.
+!  Read in the list of variables to be printed.
+!
+      if (nname>0) call allocate_fnames(nname)
+
+
+      if ( dimensionality>0 .and. dsound/=0.0 ) then
+        if (nname_sound>0) call allocate_sound_data(nname_sound)
+      endif
+
+      if (nnamez>0) call allocate_xyaverages(nnamez)
+
+      if (nnamey>0) call allocate_xzaverages(nnamey)
+
+      if (nnamex>0) call allocate_yzaverages(nnamex)
+
+      if (nnamer>0) then
+        if (lcylinder_in_a_box.or.lsphere_in_a_box) then
+          call allocate_phizaverages(nnamer)
+        endif
+      endif
+
+      if (nnamexz>0) call allocate_yaverages(nnamexz)
+
+!
+      if (nnamexy>0) then
+        if (lwrite_zaverages) call allocate_zaverages_data(nnamexy)
+      endif
+
+      if (nnamerz>0) then
+        if (lcylinder_in_a_box.or.lsphere_in_a_box) then
+          call allocate_phiaverages(nnamerz)
+        endif
+      endif
+
+    endsubroutine allocate_diagnostic_arrays
+!***********************************************************************
+   subroutine save_diagnostic_controls
+!
+!  Saves threadprivate variables to shared ones.
+!
+!  25-aug-23/TP: Coded
+!  19-march-25/TP: moved from Equ to here
+!
+    l1davgfirst_save = l1davgfirst
+    ldiagnos_save = ldiagnos
+    l1dphiavg_save = l1dphiavg
+    l2davgfirst_save = l2davgfirst
+
+    lout_save = lout
+    l1davg_save = l1davg
+    l2davg_save = l2davg
+    lout_sound_save = lout_sound
+    lvideo_save = lvideo
+!
+!  Record times for diagnostic and 2d average output.
+!
+    if (l1davgfirst) t1ddiagnos_save=t ! (1-D averages are for THIS time)
+    if (l2davgfirst) t2davgfirst_save=t ! (2-D averages are for THIS time)
+    if (lvideo     ) tslice_save=t ! (slices are for THIS time)
+    if (lout_sound ) tsound_save=t
+    if (ldiagnos) then
+      t_save  = t ! (diagnostics are for THIS time)
+      dt_save = dt
+      it_save = it
+      eps_rkf_save = eps_rkf
+    endif
+    lpencil_save = lpencil
+
+    endsubroutine save_diagnostic_controls
+!***********************************************************************
+    subroutine restore_diagnostic_controls
+!
+!   Restores the diagnostics flags that were saved when calculating diagnostics started.
+!
+!   13-nov-23/TP: Written
+!   19-march-25/TP: moved from Equ to here
+!
+    l1davgfirst = l1davgfirst_save
+    ldiagnos = ldiagnos_save
+    l1dphiavg = l1dphiavg_save
+    l2davgfirst = l2davgfirst_save
+
+    lout = lout_save
+    l1davg = l1davg_save
+    l2davg = l2davg_save
+    lout_sound = lout_sound_save
+    lvideo = lvideo_save
+    t1ddiagnos = t1ddiagnos_save
+    t2davgfirst= t2davgfirst_save
+    tslice = tslice_save
+    tsound = tsound_save
+
+    if (ldiagnos) then
+      tdiagnos  = t_save
+      dtdiagnos = dt_save
+      itdiagnos = it_save
+      eps_rkf_diagnos = eps_rkf_save
+    endif
+
+    tspec = tspec_save
+    lpencil = lpencil_save
+
+    endsubroutine restore_diagnostic_controls
 !***********************************************************************
 endmodule Diagnostics

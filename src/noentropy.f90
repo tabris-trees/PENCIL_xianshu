@@ -82,8 +82,12 @@ module Energy
       real, dimension (mx,my,mz,mfarray) :: f
 !
       real :: cp
-
-      call get_gamma_etc(gamma,cp)
+!
+!  The following only makes sense if leos=.true.
+!
+      if (leos) then
+        call get_gamma_etc(gamma,cp)
+      endif
 !
 !  Tell the equation of state that we're here and what f variable we use.
 !
@@ -91,7 +95,7 @@ module Energy
         if (lroot) call warning('initialize_energy', &
            'llocal_iso=T. Make sure you have the appropriate INITIAL_CONDITION in Makefile.local')
         call select_eos_variable('cs2',-2) !special local isothermal
-      else
+      elseif (leos) then
         if (gamma == 1.) then
           call select_eos_variable('cs2',-1) !isothermal
         else
@@ -230,8 +234,13 @@ module Energy
         endif
         if (llocal_iso)  lpencil_in(i_glnTT)=.true.
       endif
-      if (lpencil_in(i_TT1) .and. gamma/=1.) lpencil_in(i_cs2)=.true.
-      if (lpencil_in(i_cs2) .and. gamma/=1.) lpencil_in(i_lnrho)=.true.
+!
+!  The following only makes sense if leos is true.
+!
+      if (leos) then
+        if (lpencil_in(i_TT1) .and. gamma/=1.) lpencil_in(i_cs2)=.true.
+        if (lpencil_in(i_cs2) .and. gamma/=1.) lpencil_in(i_lnrho)=.true.
+      endif
 !
     endsubroutine pencil_interdep_energy
 !***********************************************************************
@@ -290,7 +299,7 @@ module Energy
 !
 !  ``cs2/dx^2'' for timestep - but only if we are evolving hydrodynamics.
 !
-      if (lfirst.and.ldt) then
+      if (lupdate_courant_dt) then
         if (leos.and.ldensity.and.lhydro) then
           p%advec_cs2=p%cs2*dxyz_2
           if (headtt.or.ldebug) print*, 'calc_pencils_energy: max(advec_cs2) =', maxval(p%advec_cs2)
@@ -359,12 +368,12 @@ module Energy
         if (any(beta_glnrho_scaled /= 0.)) then
           if (headtt) print*, 'denergy_dt: adding global pressure gradient force'
           do j=1,3
-            df(l1:l2,m,n,(iux-1)+j) = df(l1:l2,m,n,(iux-1)+j) - p%cs2*beta_glnrho_scaled(j)
+            df(l1:l2,m,n,iux-1+j) = df(l1:l2,m,n,iux-1+j) - p%cs2*beta_glnrho_scaled(j)
           enddo
         endif
       endif
 
-      if (lfirst.and.ldt.and.leos.and.ldensity.and.lhydro) advec_cs2 = p%advec_cs2
+      if (lupdate_courant_dt.and.leos.and.ldensity.and.lhydro) advec_cs2 = p%advec_cs2
 
       call calc_diagnostics_energy(f,p)
 !
@@ -584,10 +593,12 @@ module Energy
 
     use Syscalls, only: copy_addr
 
-    integer, parameter :: n_pars=0
+    integer, parameter :: n_pars=2
     integer(KIND=ikind8), dimension(n_pars) :: p_par
 
       call keep_compiler_quiet(p_par)
+      call copy_addr(lviscosity_heat,p_par(1)) ! bool
+      call copy_addr(w_sldchar_ene,p_par(2))
 
     endsubroutine pushpars2c
 !***********************************************************************

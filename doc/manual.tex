@@ -400,7 +400,7 @@ $\displaystyle##$\hfil\cr>\cr\sim\cr}}}
 
   %\emph{$ $Date$ $,~ $ $Revision$ $}\\
   \today\\
-  \url{http://www.nordita.org/software/pencil-code/}\\
+  \url{https://pencil-code.org}\\
   \url{https://github.com/pencil-code/pencil-code}
 
   \vspace{\stretch{3}}
@@ -457,7 +457,7 @@ An up to date list of Pencil Code contributors can be found at
 {\footnotesize{
 \begin{tabular}{lll}
   xiang-yu & \htmladdnormallink{Xiang-Yu Li}{https://www.pnnl.gov/science/staff/staff_info.asp?staff_num=10102} & Pacific Northwest National Laboratory \\
-  wladimir.lyra & \htmladdnormallink{Wladimir Lyra}{http://www.wladimirlyra.com} & New Mexico State Univ. \\
+  wladimir.lyra & \htmladdnormallink{Wladimir Lyra}{http://astronomy.nmsu.edu/wlyra/} & New Mexico State Univ. \\
   weezy & \htmladdnormallink{S. Louise Wilkin}{http://www.mas.ncl.ac.uk/~n9405169/} & University of Newcastle\\
   wdobler & \htmladdnormallink{Wolfgang Dobler}{http://www.kis.uni-freiburg.de/~dobler/} & Bruker, Potsdam\\
   vpariev & \htmladdnormallink{Vladimir Pariev}{http://www.pas.rochester.edu/~vpariev/} & University of Rochester\\
@@ -2170,7 +2170,7 @@ The \cmd{pencil-test} script will use \cmd{pc_auto-test} if given the
   \prompt{unix> } pencil-test -b \
              -Wa,--max-level=1,--no-pencil-check  # quick pencil test
 \end{alltt}
-See \cmd{pencil-test --help} for a complete list of options.
+See \cmd{pencil-test --help} for a complete list of options, and section \ref{S-Testing} for more details.
 
 
 
@@ -5035,7 +5035,7 @@ is written in terms of $\ln\rho$,
   = - \Div\uv \; .
 \end{equation}
 Here $\rho$ denotes density, $\uv$ the fluid velocity, $t$ is time and
-$\De/\De t \equiv \partial/\partial t + \uv\cdot\grad$ is the convective
+$\De/\De t \equiv \partial/\partial t + \uv\cdot\grad$ is the advective
 derivative.
 
 % ---------------------------------------------------------------------- %
@@ -8406,6 +8406,57 @@ following steps.
 
 \end{enumerate}
 
+%%%
+\subsection{Auto-tests with systemd}
+On modern Linux systems, you can use systemd (instead of cron) to run periodic auto-tests.
+You need to create a couple of files in
+\file{\~{}/.config/systemd/user/}:
+
+\file{pencil_test.service}\footnote{
+Options and filepaths may need to be modified; note that \code{\%h} is used to denote the user's home directory.
+}
+\begin{alltt}
+  [Unit]
+  Description=Pencil-code test
+
+  [Service]
+  Type=simple
+  Environment="PENCIL_HOME=\%h/.software/pencil-code-for-tests"
+  ExecStart=\%h/.software/pencil-code-for-tests/bin/pencil-test \bs
+    -N 15 --update --html --clean --local --use-pc_auto-test \bs
+    --auto-test-options="--max-level=3 --script-tests=python --time-limit=5m"
+  StandardOutput=truncate:\%h/public_html/pencil_tests/master_full.html
+\end{alltt}
+(the backslashes can be left as-is) and
+\file{pencil_test.timer}
+\begin{alltt}
+  [Unit]
+  Description=Run pencil test daily at 10pm
+
+  [Timer]
+  OnCalendar=*-*-* 22:00:00
+  Persistent=True
+
+  [Install]
+  WantedBy=timers.target
+\end{alltt}
+
+After creating these files, run
+\begin{alltt}
+  systemctl --user enable pencil_test.timer
+  systemctl --user start pencil_test.timer
+\end{alltt}
+
+%%%
+\subsection{Testing the postprocessing modules}
+
+Some of the samples contain additional scripts that test the Python and IDL postprocessing modules.
+The are not checked by \cmd{pc_auto-test} by default; to include these tests, use the \cmd{--script-tests} option, e.g.\@
+\begin{alltt}
+  pc_auto-test --max-level=3 --script-tests=python
+\end{alltt}
+
+The Python postprocessing modules contain an additional set of quick tests that can be invoked as described in \file{PENCIL_HOME/python/tests/README.md}.
 
 % ====================================================================== %
 
@@ -13339,7 +13390,7 @@ double precision, $\varepsilon\approx10^{-15}$.
   \var{unit_temperature} [\code{1}]
                & Example: \code{unit_temperature='1e6'} if you want
                  mega-Kelvin.\\
-  \var{random_gen} [\code{system}]
+  \var{random_gen} [\code{min_std}]
                & \label{random-gen-init}
                  choose random number generator;
                  currently valid choices are

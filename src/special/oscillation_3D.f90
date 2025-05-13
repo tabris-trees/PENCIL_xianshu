@@ -84,20 +84,28 @@ module oscillation_3D
 !
 ! Declare index of new variables in f array (if any).
 !
-   integer :: ispecial=0,ispecial1=0,ispecial2=0
+  real :: ampl_psi=0., initpower_psi=0.,  initpower2_psi=0., kpeak_psi=0.
+  real :: ampl_dpsi=0., initpower_dpsi=0.,  initpower2_dpsi=0., kpeak_dpsi=0.
+  real :: relhel_psi=0., cutoff_psi=0.,  ncutoff_psi=1.
+  real :: kgaussian_psi=0.,kgaussian_dpsi=0.
+  logical :: lno_noise_psi=.false.
+  logical :: lskip_projection_psi=.false., lvectorpotential=.false.
+  logical :: lscale_tobox_psi=.true., lscale_tobox_dpsi=.true.
 !
-  real :: om1,om2,u1ini,u2ini
-  character(len=50) :: init='zero'
-  namelist /oscillation_3D_init_pars/ &
-    init,om1,om2,u1ini,u2ini
+  real :: modulation_fact=1.
+  character (len=labellen), dimension(ninit) :: init_psi='nothing'
+  namelist /oscillation_3D_init_pars/  init_psi, &
+    ampl_psi, initpower_psi, initpower2_psi, kpeak_psi, &
+    ampl_dpsi, initpower_dpsi, initpower2_dpsi, kpeak_dpsi, &
+    lscale_tobox_psi
 !
   ! run parameters
   namelist /oscillation_3D_run_pars/ &
-    om1,om2
+    modulation_fact
 !
 ! other variables (needs to be consistent with reset list below)
 !
-  integer :: idiag_u1=0,idiag_u2=0
+  integer :: idiag_psirms=0,idiag_dpsirms=0
 !
   contains
 !****************************************************************************
@@ -118,10 +126,8 @@ module oscillation_3D
       if (lroot) call svn_id( &
            "$Id$")
 !
-      call farray_register_pde('ispecial',ispecial,array=2)
-!
-      ispecial1=ispecial
-      ispecial2=ispecial+1
+      call farray_register_pde('ispecial',ispecialvar,array=2)
+      ispecialvar2=ispecialvar+1
 !
     endsubroutine register_special
 !***********************************************************************
@@ -138,10 +144,8 @@ module oscillation_3D
       if (lroot) call svn_id( &
            "$Id$")
 !
-      call farray_register_pde('ispecial',ispecial,array=2)
-!
-      ispecial1=ispecial
-      ispecial2=ispecial+1
+      call farray_register_pde('ispecial',ispecialvar,array=2)
+      ispecialvar2=ispecialvar+1
 !
     endsubroutine register_particles_special
 !***********************************************************************
@@ -174,31 +178,52 @@ module oscillation_3D
 !  initialise special condition; called from start.f90
 !  06-oct-2003/tony: coded
 !
+      use Initcond, only: power_randomphase_hel
+!
       real, dimension (mx,my,mz,mfarray) :: f
+      real :: kx
+      integer :: j
 !
       intent(inout) :: f
 !
 !  initial condition
 !
-      select case (init)
-        case ('nothing'); if (lroot) print*,'init_special: nothing'
-        case ('zero'); f(:,:,:,ispecial1)=0.
-        case ('set'); f(:,:,:,ispecial1)=u1ini; f(:,:,:,ispecial2)=u2ini
-        case ('sincos')
-          do m=1,my
-          do n=1,mz
-            f(:,m,n,ispecial1)=u1ini*sin(x)
-            f(:,m,n,ispecial2)=u2ini*cos(x)
-          enddo
-          enddo
+      do j=1,ninit
+        select case (init_psi(j))
+          case ('nothing'); if (lroot) print*,'init_psi: nothing'
+          case ('set')
+            f(:,:,:,ispecialvar)=f(:,:,:,ispecialvar)+ampl_psi
+            f(:,:,:,ispecialvar2)=f(:,:,:,ispecialvar2)+ampl_dpsi
+          case ('sincos')
+            kx=2*pi/Lx
+            do m=1,my
+            do n=1,mz
+              f(:,m,n,ispecialvar)=ampl_psi*sin(kx*x)
+              f(:,m,n,ispecialvar2)=ampl_dpsi*cos(kx*x)
+            enddo
+            enddo
 !
-        case default
-          !
-          !  Catch unknown values
-          !
-          if (lroot) print*,'init_special: No such value for init: ', trim(init)
-          call fatal_error("init_special","init value not defined")
-      endselect
+!  spectrum
+!
+            case ('psi_power_randomphase')
+              call power_randomphase_hel(ampl_psi, initpower_psi, initpower2_psi, &
+                cutoff_psi, ncutoff_psi, kpeak_psi, f, ispecialvar, ispecialvar, &
+                relhel_psi, kgaussian_psi, lskip_projection_psi, lvectorpotential, &
+                lscale_tobox_psi, lpower_profile_file=.false., lno_noise=lno_noise_psi)
+            case ('dpsi_power_randomphase')
+              call power_randomphase_hel(ampl_dpsi, initpower_dpsi, initpower2_dpsi, &
+                cutoff_psi, ncutoff_psi, kpeak_dpsi, f, ispecialvar2, ispecialvar2, &
+                relhel_psi, kgaussian_psi, lskip_projection_psi, lvectorpotential, &
+                lscale_tobox_psi, lpower_profile_file=.false., lno_noise=lno_noise_psi)
+!
+          case default
+            !
+            !  Catch unknown values
+            !
+            if (lroot) print*,'init_psi: No such value for init_psi: ', trim(init_psi(j))
+            call fatal_error("init_psi","init value not defined")
+        endselect
+      enddo
 !
     endsubroutine init_special
 !***********************************************************************
@@ -246,15 +271,8 @@ module oscillation_3D
 !***********************************************************************
     subroutine dspecial_dt(f,df,p)
 !
-!  calculate right hand side of ONE OR MORE extra coupled PDEs
-!  along the 'current' Pencil, i.e. f(l1:l2,m,n) where
-!  m,n are global variables looped over in equ.f90
-!
-!  Due to the multi-step Runge Kutta timestepping used one MUST always
-!  add to the present contents of the df array.  NEVER reset it to zero.
-!
-!  Several precalculated Pencils of information are passed for
-!  efficiency.
+!  Solve wave equation in 3-D with wave speed altered by
+!  the strain tensor components.
 !
       use Diagnostics
       use Mpicomm
@@ -262,49 +280,72 @@ module oscillation_3D
       use FArrayManager, only: farray_index_by_name
       use Sub
 !
-!  06-oct-03/tony: coded
+!  05-jan-25/axel: coded
 !
       real, dimension (mx,my,mz,mfarray) :: f
       real, dimension (mx,my,mz,mvar) :: df
-      real, dimension (nx) :: u1, u2, tmp
+      real, dimension (nx) :: tmp
       type (pencil_case) :: p
 !
       intent(in) :: f,p
       intent(inout) :: df
 !
-      integer :: ihhT_realspace, ihhX_realspace
+      integer :: ih11_realspace, ih22_realspace, ih33_realspace
+      integer :: ih12_realspace, ih23_realspace, ih31_realspace
+      integer :: i, j, ij
 !
 !  Identify module and boundary conditions.
 !
       if (headtt.or.ldebug) print*,'dspecial_dt: SOLVE dspecial_dt'
-!!      if (headtt) call identify_bcs('special',ispecial)
 !
-!  Solve the equations du1/dt = om1*u2
-!                      du2/dt = om2*u1
+!  Determine indices from other module
 !
-        u1=f(l1:l2,m,n,ispecial1)
-        u2=f(l1:l2,m,n,ispecial2)
+        ih11_realspace=farray_index_by_name('h11_realspace')
+        ih22_realspace=farray_index_by_name('h22_realspace')
+        ih33_realspace=farray_index_by_name('h33_realspace')
+        ih12_realspace=farray_index_by_name('h12_realspace')
+        ih23_realspace=farray_index_by_name('h23_realspace')
+        ih31_realspace=farray_index_by_name('h31_realspace')
 !
-        ihhT_realspace=farray_index_by_name('hhT_realspace')
-        ihhX_realspace=farray_index_by_name('hhX_realspace')
-        if (ihhT_realspace>0) then
-          if (m==m1.and.n==n1) print*,'AXEL2: ihhT_realspace=',f(l1:l1+3,m2,n1,ihhT_realspace)
+!  Solve wave equation d2psi/dt = del2 psi.
+!  Begin with dpsi/dt = dpsi and solve further below ddpsi/dt = del2 psi.
+!
+        df(l1:l2,m,n,ispecialvar)=df(l1:l2,m,n,ispecialvar)+f(l1:l2,m,n,ispecialvar2)
+!
+!  Do the following only if at least the first of 6 indices exists.
+!
+        if (ih11_realspace>0) then
+          do ij=1,6
+!
+!  Select i and j, and the target location ihij in the f-array.
+!
+            select case (ij)
+              case (1); i=1; j=1; ihij=ih11_realspace
+              case (2); i=2; j=2; ihij=ih22_realspace
+              case (3); i=3; j=3; ihij=ih33_realspace
+              case (4); i=1; j=2; ihij=ih12_realspace
+              case (5); i=2; j=3; ihij=ih23_realspace
+              case (6); i=3; j=1; ihij=ih31_realspace
+            endselect
+!
+!  For diagonal components, add (delta_ij+h_ij)*d2f/dx_i dx_j
+!  For each pair of off-diagonal components, add 2h_ij*d2f/dx_i dx_j.
+!
+            if (i==j) then
+              call der2(f,ispecialvar,tmp,i)
+              df(l1:l2,m,n,ispecialvar2)=df(l1:l2,m,n,ispecialvar2)+(1.+modulation_fact*f(l1:l2,m,n,ihij))*tmp
+            else
+              call derij(f,ispecialvar,tmp,i,j)
+              df(l1:l2,m,n,ispecialvar2)=df(l1:l2,m,n,ispecialvar2)+2.*modulation_fact*f(l1:l2,m,n,ihij)*tmp
+            endif
+          enddo
         endif
-
-        call der2 (f,ispecial1,tmp,1)
-!       do i=j+1,3
-!         call derij(f,k,tmp,i,j); g(:,i,j)=tmp; g(:,j,i)=tmp
-!
-        df(l1:l2,m,n,ispecial1)=df(l1:l2,m,n,ispecial1)+u2
-        df(l1:l2,m,n,ispecial2)=df(l1:l2,m,n,ispecial2)+om1**2*tmp
 !
 !  diagnostics
 !
       if (ldiagnos) then
-        if (lroot.and.m==mpoint.and.n==npoint) then
-          if (idiag_u1/=0) call save_name(u1(lpoint-nghost),idiag_u1)
-          if (idiag_u2/=0) call save_name(u2(lpoint-nghost),idiag_u2)
-        endif
+        call sum_mn_name(f(l1:l2,m,n,ispecialvar)**2,idiag_psirms,lsqrt=.true.)
+        call sum_mn_name(f(l1:l2,m,n,ispecialvar2)**2,idiag_dpsirms,lsqrt=.true.)
       endif
 !
       call keep_compiler_quiet(p)
@@ -331,9 +372,11 @@ module oscillation_3D
 !***********************************************************************
     subroutine read_special_run_pars(iostat)
 !
+      use File_io, only: parallel_unit
+!
       integer, intent(out) :: iostat
 !
-      iostat = 0
+      read(parallel_unit, NML=oscillation_3D_run_pars, IOSTAT=iostat)
 !
     endsubroutine read_special_run_pars
 !***********************************************************************
@@ -368,20 +411,20 @@ module oscillation_3D
 !  (this needs to be consistent with what is defined above!)
 !
       if (lreset) then
-        idiag_u1=0; idiag_u2=0
+        idiag_psirms=0; idiag_dpsirms=0
       endif
 !
       do iname=1,nname
-        call parse_name(iname,cname(iname),cform(iname),'u1',idiag_u1)
-        call parse_name(iname,cname(iname),cform(iname),'u2',idiag_u2)
+        call parse_name(iname,cname(iname),cform(iname),'psirms',idiag_psirms)
+        call parse_name(iname,cname(iname),cform(iname),'dpsirms',idiag_dpsirms)
       enddo
 !
 !  write column where which variable is stored
 !
-      if (lwr) then
-        call farray_index_append('i_u1',idiag_u1)
-        call farray_index_append('i_u2',idiag_u2)
-      endif
+!     if (lwr) then
+!       call farray_index_append('i_psirms',idiag_psirms)
+!       call farray_index_append('i_dpsirms',idiag_dpsirms)
+!     endif
 !
     endsubroutine rprint_special
 !***********************************************************************

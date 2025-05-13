@@ -51,6 +51,7 @@ exec $perl -x -S $0 "$@"     # -x: start from the following line
 #                                'type1:interp1,type2:interp2,...'. Use
 #                                'DEFAULT' to get all configured types
 #                                with their default interpreters
+#       --submodules          -- update all submodules when pulling
 #   -t <limit>,
 #       --time-limit=<limit>  -- Limit total time for each {start,run}.x phase
 #   -T <file>,
@@ -77,10 +78,12 @@ exec $perl -x -S $0 "$@"     # -x: start from the following line
 #   30 02 * * *  cd $HOME/pencil-auto-test && svn up && bin/pencil-test --clean --html --mail=my@email.net --nice=15 --reload --short --timings-file=$HOME/public_html/autotest_timings.txt > $HOME/public_html/autotest.html
 
 use strict;
+use Cwd;
 use POSIX qw(strftime);
 use Getopt::Long;
 use IPC::Open2;
 use constant SUCCESS => 1;      # return value
+use Cwd qw(abs_path);
 
 my (%opts);                     # Variables written by GetOptions
 my (%emails, %pos, %neg, %sendmailto); # Info on mailing if tests fail
@@ -110,6 +113,7 @@ GetOptions(\%opts,
                -M=s --Mailer=s
                -p=s --postproc=s
                     --script-tests=s
+                    --submodules
                -t=s --time-limit=s
                -T=s --timings-file=s
                     --tag-stable
@@ -126,7 +130,7 @@ my $html        = ($opts{'H'} || $opts{'html'}        || 0 );
 my $local       = ($opts{'l'} || $opts{'local'}       || 0 );
 my $lock        = ($opts{'L'} || $opts{'lock'}        || 0 );
 my $clean       = ($opts{'c'} || $opts{'clean'}       || 0 );
-my $pencil_home = ($opts{'D'} || $opts{'pencil-home'} || '$PENCIL_HOME' || `pwd`);
+my $pencil_home = ($opts{'D'} || $opts{'pencil-home'} || '$PENCIL_HOME' || cwd());
 my $nice        = ($opts{'N'} || $opts{'nice'}        || 0 );
 my $infofile    = ($opts{'i'} || $opts{'infofile'}    || '' );
 my $update      = ($opts{'u'} || $opts{'update'}      || $opts{'U'}  || 0 ); # keeping -U for backwards compatibility
@@ -136,7 +140,8 @@ my $tag_stable  = (              $opts{'tag-stable'}  || 0 );
 my $emails      = ($opts{'m'} || $opts{'mail'}        || '');
 my $mailer      = ($opts{'M'} || $opts{'Mailer'}      || '');
 my $postproc    = ($opts{'p'} || $opts{'postproc'}    || '');
-my $script_tests = (             $opts{'script-tests'} || '');
+my $script_tests= (              $opts{'script-tests'}|| '');
+my $submodules  = (              $opts{'submodules'}  || 0 );
 my $time_limit  = ($opts{'t'} || $opts{'time-limit'}  || '');
 my $timingsfile = ($opts{'T'} || $opts{'timings-file'}|| '');
 my $with_xml    = ($opts{'x'} || $opts{'xml'}         || '');
@@ -172,11 +177,24 @@ if ($local) {
 # Make sure we have /usr/sbin in path (which is where sendmail is often located)
 $ENV{PATH} = "$ENV{PATH}:/usr/sbin" unless ($ENV{PATH} =~ m{(^|:)/usr/sbin($|:)});
 
+# Add PENCIL_HOME/bin to the path
+$ENV{PATH} = '"'.$pencil_home.'/bin":'.$ENV{PATH} if ($pencil_home);
+
 if ($lock) {
     # Do not make a mess if another pencil-test is already running on this machine!
     my $instances_running = `ps aux | grep -v "grep" | grep "perl" | grep "$0" | wc -l`;
     $instances_running =~ s/\s+$//s;
     if ($instances_running > 1) { die ("ERROR: another 'pencil-test' is already running here!\n"); }
+}
+
+#If relative paths have been specified, convert to absolute paths. Otherwise,
+#$log_dir is treated as relative to $PENCIL_HOME (not the directory where
+#pencil-test was invoked).
+if ($log_dir ne '') {
+    $log_dir = abs_path($log_dir);
+}
+if ($previous_dir ne '') {
+    $previous_dir = abs_path($previous_dir);
 }
 
 # Make a backup of the previous logfile directory
@@ -347,14 +365,20 @@ sub run_tests_on {
 sub build_remote_cmd {
 # Construct the command to send to the remote host
 
-    my $remcmd = "cd $pencil_home; ";
+    my $remcmd = "";
     if ($update) {
-        $remcmd .= ''
+        my $prev_wd=cwd();
+	my $recurse_cmd = "";
+	if ($submodules) { 
+	    $recurse_cmd = '    (git submodule update --init --recursive || echo "UPDATE ERROR: git submodule");';
+	}
+        $remcmd .= 'cd "'.$pencil_home.'";'
           . 'if [ -e .git ]; then'  # .git can be a directory or a file
           . '    (git stash -q -u || echo "UPDATE ERROR: git stash");'
           . '    (git fetch -q || echo "UPDATE ERROR: git fetch");'
           # . '    (git reset -q --hard @{u} || echo "UPDATE ERROR: git reset");'
           . '    (git pull --rebase -q || echo "UPDATE ERROR: git pull");'
+	  . $recurse_cmd
           . '    printf "Updated to git revision %s\n" $(git rev-parse HEAD);'
           . 'elif [ -d .svn ]; then'
           . '    (svn -q update || echo "UPDATE ERROR: svn update failed");'
@@ -362,11 +386,12 @@ sub build_remote_cmd {
           . '    echo "UPDATE ERROR: Neither git nor svn checkout";'
           . '    false;'
           . 'fi;'
+          . 'cd "'.$prev_wd.'";'
     }
     if ($use_build) {
-        $remcmd .= "env PENCIL_HOME=$pencil_home ./bin/pc_auto-test ";
+        $remcmd .= "env PENCIL_HOME=\"$pencil_home\" PATH=\"$ENV{PATH}\" pc_auto-test ";
     } else {
-        $remcmd .= "env PENCIL_HOME=$pencil_home ./bin/auto-test ";
+        $remcmd .= "env PENCIL_HOME=\"$pencil_home\" PATH=\"$ENV{PATH}\" auto-test ";
     }
     $remcmd .= "--time ";
     if ($emails)             { $remcmd .= "--list-maintainers "; }
@@ -695,10 +720,10 @@ sub send_mail {
         my $plurals = ($nerrors<=1 ? '' : 's');
         $errmsg = "$nerrors error$plurals";
     } else {                    # most likely: lockfile exists
-        $errmsg = "There are errors";
+        $errmsg = "There are errors ".$nerrors;
     }
 
-    my $subject = "$errmsg from pencil-code autotest on $host";
+    my $subject = $errmsg." from PC autotest on $host";
 
     # Add Reply-To: field if we have enough information
     my $reply_to = undef;

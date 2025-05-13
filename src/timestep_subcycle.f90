@@ -34,6 +34,8 @@ module Timestep
 
       if (dt0 < 0.) dt = 0
       ldt = (dt==0.)
+      lcourant_dt = .true.
+      num_substeps = 3
 
     endsubroutine initialize_timestep
 !***********************************************************************
@@ -46,8 +48,6 @@ module Timestep
       use BorderProfiles, only: border_quenching
       use Equ, only: pde
       use Mpicomm, only: mpiallreduce_max
-      use Particles_main, only: particles_timestep_first, &
-          particles_timestep_second
       use Shear, only: advance_shear
       use Sub, only: shift_dt
       use Energy

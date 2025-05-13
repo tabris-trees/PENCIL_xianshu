@@ -5,7 +5,7 @@
 
 MPICOMM      =   mpicomm
 IO           =   io_hdf5
-TIMESTEP     =   timestep_rkf
+TIMESTEP     =   timestep_rkf_lowsto
 
 INITIAL_CONDITION = initial_condition/ths_equilibrium_ism
 HYDRO        =   hydro
@@ -22,5 +22,6 @@ GRAVITY      =   gravity_simple
 FORCING      = noforcing
 SHEAR        =   shear
 
-POWER        = nopower_spectrum
+FOURIER      =   fourier_fftpack
+POWER        =   power_spectrum
 REAL_PRECISION = double
