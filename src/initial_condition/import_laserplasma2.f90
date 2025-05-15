@@ -94,20 +94,22 @@ contains
         integer :: pos, l, j, ju
         ! The next 2 variables are used for the uncurling.
         real, dimension(nx, ny, nz, 3) :: jj, tmpJ  ! This is phi for poisson.f90
-        real, dimension(nx, ny, 4) :: bb2d  ! dat field
-        real :: bb_pg_2d_p
+        ! real, dimension(nx, ny, 4) :: bb2d_pg  ! dat field
+        real, dimension(nxgrid, nygrid, 4) :: bb2d_pg  ! dat field
 
 
 ! read the magnetic field
-        call readdat(bb2d)
+        call readdat(bb2d_pg)
 
-        do n = 1, nz
-          do m = 1, ny
-            do l = 1, nx
+        ! do n = 1, nz
+        do n = 1, nzgrid
+          ! do m = 1, ny
+          do m = 1, nygrid
+            ! do l = 1, nx
+            do l = 1, nxgrid
               if ((l > nx + nx*ipx + nghost .or. m > ny + ny*ipy + nghost .or. n > nz + nz*ipz + nghost .or. &
                   l < 1 + nx*ipx - nghost .or. m < 1 + ny*ipy - nghost .or. n < 1 + nz*ipz - nghost) .eqv. .false.) then
-                bb_pg_2d_p = bb2d(l,m,1:3)
-                f(l + nghost - nx*ipx, m + nghost - ny*ipy, n + nghost - nz*ipz, iax:iaz) = bb_pg_2d_p
+                f(l + nghost - nx*ipx, m + nghost - ny*ipy, n + nghost - nz*ipz, iax:iaz) = bb2d_pg(l, m, 1:3)
               end if
             end do
           end do
@@ -163,14 +165,15 @@ contains
 !
     end subroutine write_initial_condition_pars
 !***********************************************************************
-    subroutine readdat(bb2d)
+    subroutine readdat(bb2d_pg)
 ! real, dimension(mx, my, mz, mfarray) :: f
         integer :: fileSize
         ! character(len=:), allocatable :: raw  ! contains the unformatted data
         ! real, allocatable :: bb(:, :, :, :)     ! magnetic field
-        real, allocatable :: bb2d(:, :, :) !, bigmain(:, :, :)    ! temporary 2d magnetic field
+        real, allocatable :: bb2d(:, :, :), bigmain(:, :)    ! temporary 2d magnetic field
         ! real*8, allocatable :: bb64(:,:,:,:)    ! for double precision
-        ! real, dimension(nx, ny, nz, 4) :: bb_pg
+        ! real, dimension(nx, ny, 4) :: bb2d_pg
+        real, dimension(nxgrid, nygrid, 4) :: bb2d_pg
         real :: valuemain, x1, y1, z1
         integer :: filenx, fileny, filenz
         integer :: unit, ios, ix, iy, iz, index
@@ -179,8 +182,8 @@ contains
         logical :: lexist
         ! The next 2 variables are used for the uncurling.
         ! real, dimension(nx, ny, nz, 3) :: jj, tmpJ  ! This is phi for poisson.f90
-        ! character(len=100) :: outfile, infile
-        ! integer :: unit_out
+        character(len=100) :: outfile, infile
+        integer :: unit_out
 
         !
         !  First one is the Bx field
@@ -192,7 +195,7 @@ contains
         ! nz = 512
 
         ! allocate (bb_pg(nx, ny, nz, 4)) ! has been allocated
-        allocate (bigmain(filenx, fileny, filenz))
+        allocate (bigmain(filenx, fileny))
 
         do index = 1, 4
 
@@ -221,10 +224,6 @@ contains
           filenz = filenx
           fileSize = filenx*fileny*filenz
 
-          if ( filenx /= nx .or. fileny /= ny .or. filenz /= nz) then
-            call fatal_error('initial_condition_aa', 'Unmatched grid size between Bx2d.dat and PENCIL')
-          end if
-
           if (allocated(bb2d)) then
             continue
           else if (.not. allocated(bb2d)) then
@@ -244,7 +243,6 @@ contains
           ! end do
 
           ! Map 2D Bx into 3D f-array (repeat in z)
-          ! -------------------------------------------------------------------------- !
           ! do iz = 1, filenx
           !   do iy = 1, fileny
           !     do ix = 1, filenz
@@ -252,47 +250,49 @@ contains
           !     end do
           !   end do
           ! end do
-          ! ---------------------------------------------------------------------------- !
+
           ! write (*, *) 'bb', size(bb, dim=1), size(bb, dim=2), size(bb, dim=3), size(bb, dim=4)
 
           ! Interpolates to the grid specified in PENCIL
-          ! ---------------------------------------------------------------------------- !
-          ! bigmain = bb(:, :, :, index)
+          bigmain = bb2d(:, :, index)
 
           ! do iz = 1, nz
           !   z1 = (real(iz) - 0.5)*real(filenz)/real(nz)
-          !   do iy = 1, ny
-          !     y1 = (real(iy) - 0.5)*real(fileny)/real(ny)
-          !     do ix = 1, nx
-          !       x1 = (real(ix) - 0.5)*real(filenx)/real(nx)
-          !       call trilinear_interp(bigmain, real(x1), real(y1), real(z1), valuemain)
-          !       bb_pg(ix, iy, iz, index) = valuemain
-          !     end do
-          !   end do
+          ! do iy = 1, ny
+          do iy = 1, nygrid
+            ! y1 = (real(iy) - 0.5)*real(fileny)/real(ny)
+            y1 = (real(iy) - 0.5)*real(fileny)/real(nygrid)
+            ! do ix = 1, nx
+            do ix = 1, nxgrid
+              ! x1 = (real(ix) - 0.5)*real(filenx)/real(nx)
+              x1 = (real(ix) - 0.5)*real(filenx)/real(nxgrid)
+              call bilinear_interp(bigmain, real(x1), real(y1), valuemain)
+              bb2d_pg(ix, iy, index) = valuemain
+            end do
+          end do
           ! end do
-          ! ---------------------------------------------------------------------------- !
         end do
 
-        write (*, *) 'bb2d', size(bb_pg, dim=1), size(bb_pg, dim=2)
+        write (*, *) 'bb2d_pg', size(bb2d_pg, dim=1), size(bb2d_pg, dim=2)
 
-        ! close(unit)
+        close(unit)
         ! deallocate (bb)
         deallocate (bb2d)
-        ! deallocate (bigmain)
+        deallocate (bigmain)
 
     end subroutine readdat
-
-    subroutine trilinear_interp(big, x, y, z, value)
+!***********************************************************************
+    subroutine trilinear_interp(big, xx, yy, zz, value)
         real, dimension(:, :, :) :: big
-        real :: x, y, z
+        real :: xx, yy, zz
         real :: value
         integer :: i, j, k
         real :: xd, yd, zd
         real :: c00, c01, c10, c11, c0, c1
 
-        i = int(x); xd = x - i
-        j = int(y); yd = y - j
-        k = int(z); zd = z - k
+        i = int(xx); xd = xx - i
+        j = int(yy); yd = yy - j
+        k = int(zz); zd = zz - k
 
         ! Border Protection
         if (i < 1) i = 1
@@ -313,6 +313,32 @@ contains
 
         value = c0*(1 - zd) + c1*zd
     end subroutine trilinear_interp
+!***********************************************************************
+    subroutine bilinear_interp(big, xx, yy, value)
+        real, dimension(:, :) :: big
+        real :: xx, yy
+        real :: value
+        integer :: i, j
+        real :: xd, yd
+        real :: c0, c1
+
+        ! Gets the integer index and decimal offset
+        i = int(xx); xd = xx - i
+        j = int(yy); yd = yy - j
+
+        ! Border Protection
+        if (i < 1) i = 1
+        if (j < 1) j = 1
+        if (i >= size(big, 1)) i = size(big, 1) - 1
+        if (j >= size(big, 2)) j = size(big, 2) - 1
+
+        ! Bilinear interpolation
+        c0 = big(i, j)*(1 - xd) + big(i + 1, j)*xd
+        c1 = big(i, j + 1)*(1 - xd) + big(i + 1, j + 1)*xd
+
+        value = c0*(1 - yd) + c1*yd
+    end subroutine bilinear_interp
+
 !***********************************************************************
 !********************************************************************
 !************        DO NOT DELETE THE FOLLOWING       **************
