@@ -68,8 +68,27 @@ contains
 !  07-may-09/wlad: coded
 !
         real, dimension(mx, my, mz, mfarray), intent(inout) :: f
+        integer :: l, m, n
+        real, dimension(nxgrid, nygrid, 4) :: bb2d_pg  ! dat field
 !
-        call keep_compiler_quiet(f)
+        call readdat(bb2d_pg)
+
+        ! do n = 1, nz
+        do n = 1, nzgrid
+          ! do m = 1, ny
+          do m = 1, nygrid
+            ! do l = 1, nx
+            do l = 1, nxgrid
+              if ((l > nx + nx*ipx + nghost .or. m > ny + ny*ipy + nghost .or. n > nz + nz*ipz + nghost .or. &
+                  l < 1 + nx*ipx - nghost .or. m < 1 + ny*ipy - nghost .or. n < 1 + nz*ipz - nghost) .eqv. .false.) then
+                f(l + nghost - nx*ipx, m + nghost - ny*ipy, n + nghost - nz*ipz, irho) = bb2d_pg(l, m, 4)
+              end if
+            end do
+          end do
+        end do
+
+        f(:,:,:,ilnrho) = log(f(:,:,:,irho))
+
 !
     end subroutine initial_condition_lnrho
 !***********************************************************************
