@@ -22,10 +22,15 @@ module InitialCondition
 !
     include '../initial_condition.h'
 !
-    character(len=50) :: BxFile = 'bx2d.dat'
-    character(len=50) :: ByFile = 'by2d.dat'
-    character(len=50) :: BzFile = 'bz2d.dat'
-    character(len=50) :: NFile = 'n2d.dat'
+    character(len=50) :: BxFile = 'bx2d_test.dat'
+    character(len=50) :: ByFile = 'by2d_test.dat'
+    character(len=50) :: BzFile = 'bz2d_test.dat'
+    character(len=50) :: NFile = 'n2d_test.dat'
+    character(len=50) :: UxFile = 'ux2d_test.dat'
+    character(len=50) :: UyFile = 'uy2d_test.dat'
+    character(len=50) :: UzFile = 'uz2d_test.dat'
+    character(len=50) :: BxmFile = 'bx2d_m1_test.dat'
+    character(len=50) :: BxpFile = 'bx2d_p1_test.dat'
 !   real :: B_bkg = 0.0
 !
     namelist /initial_condition_pars/ &
@@ -54,8 +59,28 @@ contains
 !  07-may-09/wlad: coded
 !
         real, dimension(mx, my, mz, mfarray), intent(inout) :: f
+
+        ! real, dimension(mx, my, mz, mfarray), intent(inout) :: f
+        integer :: l
+        real, dimension(nxgrid, nygrid, 4) :: bb2d_pg  ! dat field
 !
-        call keep_compiler_quiet(f)
+        call readdat(bb2d_pg)
+
+        ! do n = 1, nz
+        do n = 1, nzgrid
+          ! do m = 1, ny
+          do m = 1, nygrid
+            ! do l = 1, nx
+            do l = 1, nxgrid
+              if ((l > nx + nx*ipx + nghost .or. m > ny + ny*ipy + nghost .or. n > nz + nz*ipz + nghost .or. &
+                  l < 1 + nx*ipx - nghost .or. m < 1 + ny*ipy - nghost .or. n < 1 + nz*ipz - nghost) .eqv. .false.) then
+                f(l + nghost - nx*ipx, m + nghost - ny*ipy, n + nghost - nz*ipz, iuu:iuu+2) = log(bb2d_pg(l, m, 7:9))
+              end if
+            end do
+          end do
+        end do
+!
+        ! call keep_compiler_quiet(f)
 !
     end subroutine initial_condition_uu
 !***********************************************************************
@@ -86,9 +111,6 @@ contains
             end do
           end do
         end do
-
-        write (*, *) 'test for f(1,1,1,ilnrho) = ', f(1, 1, 1, ilnrho)
-        write (*, *) 'test for bb2d_pg(1,1,4) = ', bb2d_pg(1, 1, 4)
 
         ! f(:,:,:,ilnrho) = log(f(:,:,:,irho))
 
@@ -136,6 +158,10 @@ contains
             end do
           end do
         end do
+
+        ! write (*, *) 'ibx = ', ibx
+        ! write (*, *) 'test for f(1,1,1,ibx) = ', f(1+nghost, 1+nghost, 1+nghost, ibx)
+        ! write (*, *) 'test for bb2d_pg(1,1,1) = ', bb2d_pg(1, 1, 1)
 !
         ! deallocate (bb_pg)
 
@@ -198,7 +224,7 @@ contains
         real, dimension(nxgrid, nygrid, 4) :: bb2d_pg
         real :: valuemain, x1, y1, z1
         integer :: filenx, fileny, filenz
-        integer :: unit, ios, ix, iy, iz, index
+        integer :: unit, ios, ix, iy, iz, index, nx, ny, nz, index, idim
         ! integer :: nx, ny, nz
         ! integer :: pos, l, j, ju
         logical :: lexist
@@ -219,17 +245,27 @@ contains
         ! allocate (bb_pg(nx, ny, nz, 4)) ! has been allocated
         allocate (bigmain(filenx, fileny))
 
-        do index = 1, 4
+        do index = 1, 9
 
           select case (index)
           case (1)
-            infile = BxFile
-          case (2)
             infile = ByFile
-          case (3)
+          case (2)
             infile = BzFile
+          case (3)
+            infile = BxFile
           case (4)
             infile = NFile
+          case (5)
+            infile = BxmFile
+          case (6)
+            infile = BxpFile
+          case (7)
+            infile = UxFile
+          case (8)
+            infile = UyFile
+          case (9)
+            infile = UzFile
           end select
 
           inquire (file=infile, exist=lexist)
@@ -249,12 +285,12 @@ contains
           if (allocated(bb2d)) then
             continue
           else if (.not. allocated(bb2d)) then
-            ! allocate (bb(filenx, fileny, filenz, 4))
-            allocate (bb2d(filenx, fileny, 4))
+            ! allocate (bb(filenx, fileny, filenz, 9))
+            allocate (bb2d(filenx, fileny, 9))
           end if
 
-          write (*, *) 'infile = ', infile, '  box = ', fileSize, '  ngrid', &
-              '  filenx = ', filenx, '  fileny = ', fileny, '  filenz = ', filenz
+          ! write (*, *) 'infile = ', infile, '  box = ', fileSize, '  ngrid', &
+          !     '  filenx = ', filenx, '  fileny = ', fileny, '  filenz = ', filenz
           ! allocate(character(len = fileSize) :: raw)
           ! extract the parameters and data
           ! do iy = 1, fileny
@@ -295,7 +331,7 @@ contains
           ! end do
         end do
 
-        write (*, *) 'bb2d_pg', size(bb2d_pg, dim=1), size(bb2d_pg, dim=2)
+        ! write (*, *) 'bb2d_pg', size(bb2d_pg, dim=1), size(bb2d_pg, dim=2)
 
         close(unit)
         ! deallocate (bb)
